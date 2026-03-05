@@ -760,6 +760,91 @@ For simulators, use `simctl` instead:
 xcrun simctl uninstall booted com.myapp.MyApp
 ```
 
+## Handling System Sheets and TCC Prompts
+
+On real devices (especially after a fresh install), system dialogs block test execution. Handle them by interacting with the hosting process directly.
+
+### Sign In with Apple (AuthKitUIService)
+
+The SIWA sheet is **not** hosted by Springboard or your app — it runs in its own process (`com.apple.AuthKitUIService`). Query that process to find and dismiss it:
+
+```swift
+/// Dismiss the Sign In with Apple sheet by tapping its close button.
+/// SIWA is hosted by com.apple.AuthKitUIService, not Springboard.
+@discardableResult
+func dismissSignInWithApple() -> Bool {
+    let authKit = XCUIApplication(bundleIdentifier: "com.apple.AuthKitUIService")
+    let closeButton = authKit.navigationBars["AKAuthorizationInputPaneView"].buttons["close"]
+
+    if closeButton.waitForExistence(timeout: 2) && closeButton.isHittable {
+        closeButton.tap()
+        sleep(1)
+        return true
+    }
+    return false
+}
+```
+
+**Key insight:** `addUIInterruptionMonitor` does **not** work reliably for SIWA or most system sheets on real devices. Always use direct process interaction.
+
+To debug other system sheets, find the hosting process and dump its element tree in LLDB:
+
+```
+po XCUIApplication(bundleIdentifier: "com.apple.AuthKitUIService").debugDescription
+```
+
+### Location and Other TCC Prompts (Springboard)
+
+TCC permission dialogs (Location, Notifications, Contacts, etc.) are hosted by Springboard as alerts:
+
+```swift
+/// Handle Springboard TCC alerts — call after app.launch() and before interactions.
+@discardableResult
+func handleSystemAlerts(timeout: TimeInterval = 2.0) -> Bool {
+    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+    var handled = false
+
+    for _ in 0..<5 {
+        let alert = springboard.alerts.firstMatch
+        guard alert.waitForExistence(timeout: timeout) else { break }
+
+        // Location — approve
+        let allowWhileUsing = alert.buttons["Allow While Using App"]
+        if allowWhileUsing.exists && allowWhileUsing.isHittable {
+            allowWhileUsing.tap()
+            handled = true
+            sleep(1)
+            continue
+        }
+
+        // Generic "Allow" (notifications, etc.)
+        let allow = alert.buttons["Allow"]
+        if allow.exists && allow.isHittable {
+            allow.tap()
+            handled = true
+            sleep(1)
+            continue
+        }
+
+        // Fallback — tap first button
+        let anyButton = alert.buttons.firstMatch
+        if anyButton.exists && anyButton.isHittable {
+            anyButton.tap()
+            handled = true
+            sleep(1)
+            continue
+        }
+        break
+    }
+
+    // Also check for SIWA
+    handled = dismissSignInWithApple() || handled
+    return handled
+}
+```
+
+Call `handleSystemAlerts()` after every `app.launch()` and before each onboarding step — TCC prompts can appear at any time during a fresh install flow.
+
 ## Extracting Screenshots from Test Results
 
 ### Export Attachments
