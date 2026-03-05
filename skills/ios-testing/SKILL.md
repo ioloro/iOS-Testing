@@ -25,6 +25,7 @@ Choose the correct framework based on what you are testing:
 | Light/dark mode appearance testing | **XCUITest** (launch args) | `import XCTest` |
 | Contrast and visibility testing | **XCUITest** (accessibility audit) | `import XCTest` |
 | Snapshot/visual regression testing | **XCTest** (+ swift-snapshot-testing) | `import XCTest` |
+| Screenshot capture across variants | **XCUITest** (XCTAttachment) | `import XCTest` |
 | Exit/crash tests (Swift 6.2+) | **Swift Testing** | `import Testing` |
 
 ## Critical Rules

@@ -557,6 +557,364 @@ Results are available as `.xcresult` bundles in `derived_data/Logs/Test/`.
 - **Set `continueAfterFailure = true`** in accessibility-specific tests to report all issues rather than stopping at the first.
 - **Pair automated audits with manual VoiceOver testing** — automated audits catch structural issues but cannot verify that the VoiceOver reading order makes sense.
 
+## Screenshot Capture and Review
+
+Capture screenshots of every screen across appearance variants, themes, and user types. This is essential for visual QA, design review, and App Store submissions.
+
+### Taking Screenshots in Tests
+
+Use `XCUIScreen.main.screenshot()` for full-device captures. Always set `.keepAlways` — without it, Xcode deletes attachments from passing tests.
+
+```swift
+func takeScreenshot(name: String) {
+    let screenshot = XCUIScreen.main.screenshot()
+    let attachment = XCTAttachment(screenshot: screenshot)
+    attachment.name = name
+    attachment.lifetime = .keepAlways  // Critical: keeps screenshots even when tests pass
+    add(attachment)
+}
+```
+
+Use `XCUIScreen.main` instead of `app.screenshot()` — it captures the full device screen including status bar and system UI.
+
+### Multi-Variant Screenshot Test Pattern
+
+Define variants as structs and run the same walkthrough across all combinations:
+
+```swift
+final class AppearanceScreenshotTests: XCTestCase {
+    var app: XCUIApplication!
+
+    private struct Variant {
+        let theme: String       // e.g. "original", "georgia"
+        let appearance: String  // "light" or "dark"
+        let modeArg: String     // "--light-mode" or "--dark-mode"
+        var suffix: String { "\(theme)_\(appearance)" }
+    }
+
+    private static let variants = [
+        Variant(theme: "original", appearance: "light", modeArg: "--light-mode"),
+        Variant(theme: "original", appearance: "dark",  modeArg: "--dark-mode"),
+        Variant(theme: "georgia",  appearance: "light", modeArg: "--light-mode"),
+        Variant(theme: "georgia",  appearance: "dark",  modeArg: "--dark-mode"),
+    ]
+
+    // One test method per variant — each appears separately in test results
+    func testCapture_OriginalLight() { captureAllScreens(variant: Self.variants[0]) }
+    func testCapture_OriginalDark()  { captureAllScreens(variant: Self.variants[1]) }
+    func testCapture_GeorgiaLight()  { captureAllScreens(variant: Self.variants[2]) }
+    func testCapture_GeorgiaDark()   { captureAllScreens(variant: Self.variants[3]) }
+
+    private func captureAllScreens(variant: Variant) {
+        continueAfterFailure = true  // Don't stop on first failure — capture everything possible
+        let v = variant.suffix
+
+        app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--theme", variant.theme, variant.modeArg]
+        app.launch()
+
+        // Navigate to each screen and capture
+        navigateToTab("Play")
+        takeScreenshot(name: "01_Play/01_Default_\(v)")
+
+        navigateToTab("Settings")
+        takeScreenshot(name: "02_Settings/01_Default_\(v)")
+        // ... continue for each screen
+    }
+}
+```
+
+Key points:
+- **One test method per variant** so each runs independently and appears in results separately.
+- **Set `continueAfterFailure = true`** in screenshot tests — you want to capture as many screens as possible even if one navigation fails.
+- **Use structured names** with section prefixes (`01_Play/`, `02_Settings/`) for organized export.
+
+### User-Type Variants
+
+For premium-gated or role-specific screens, add user type to the matrix:
+
+```swift
+private enum UserType: String {
+    case subscriber, gamePass, guest
+
+    var launchArgs: [String] {
+        switch self {
+        case .subscriber: return ["--simulate-subscription"]
+        case .gamePass:   return ["--initial-game-credits", "3"]
+        case .guest:      return []
+        }
+    }
+}
+
+// Test: 4 variants x 3 user types = 12 test methods for premium screens
+func testCapture_OriginalLight_Subscriber() {
+    capturePremiumScreens(variant: Self.variants[0], userType: .subscriber)
+}
+```
+
+### Test Base Class for Screenshot Tests
+
+Extract common utilities into a base class:
+
+```swift
+class UITestBase: XCTestCase {
+    var app: XCUIApplication!
+
+    enum Timeout {
+        static let short: TimeInterval = 2.0
+        static let medium: TimeInterval = 5.0
+        static let long: TimeInterval = 10.0
+    }
+
+    func takeScreenshot(name: String) {
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func navigateToTab(_ name: String) {
+        let tabId = "tab-\(name.lowercased())"
+        let button = app.buttons[tabId]
+        guard button.waitForExistence(timeout: Timeout.short) else {
+            XCTFail("Tab '\(name)' not found")
+            return
+        }
+        button.tap()
+    }
+
+    func dismissSheet() {
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8))
+        top.press(forDuration: 0.1, thenDragTo: bottom)
+    }
+
+    func scrollToElement(_ element: XCUIElement, maxScrolls: Int = 10) {
+        let container = app.scrollViews.firstMatch
+        for _ in 0..<maxScrolls {
+            if element.isHittable { return }
+            container.swipeUp()
+        }
+    }
+}
+```
+
+## Running Tests on Real Devices
+
+### Device Destination
+
+List connected devices:
+
+```bash
+xctrace list devices
+```
+
+Run tests targeting a specific device by UDID (most reliable):
+
+```bash
+xcodebuild test \
+  -scheme MyApp \
+  -destination 'platform=iOS,id=00008140-0011256C3EA2801C' \
+  -only-testing:MyAppUITests/AppearanceScreenshotTests \
+  -resultBundlePath ./TestResults.xcresult
+```
+
+If only one device of a type is connected, you can use the name:
+
+```bash
+-destination 'platform=iOS,name=John Marc's iPhone'
+```
+
+**Important:** With multiple iPhones connected, use the UDID to avoid ambiguity.
+
+### Signing for Test Targets
+
+Both the app target and the UI test target need signing. In Xcode:
+1. Select your project > UI test target > **Signing & Capabilities**
+2. Set the same team and let Xcode manage provisioning
+
+### Fresh Install for NUX/Onboarding Capture
+
+To capture the true New User Experience (first launch, permission dialogs, onboarding), uninstall the app before running tests:
+
+```bash
+# Uninstall the app (uses devicectl for real devices)
+xcrun devicectl device uninstall app \
+  --device 00008140-0011256C3EA2801C \
+  com.myapp.MyApp
+
+# Then run tests — xcodebuild will do a fresh install
+xcodebuild test \
+  -scheme MyApp \
+  -destination 'platform=iOS,id=00008140-0011256C3EA2801C' \
+  -only-testing:MyAppUITests/AppearanceScreenshotTests \
+  -resultBundlePath ./TestResults.xcresult
+```
+
+**Why not uninstall inside the test?** After `app.launch()`, xcodebuild has already installed the app. If you uninstall mid-test, the next `app.launch()` fails because the test runner doesn't reinstall. Always uninstall *before* `xcodebuild test`.
+
+For simulators, use `simctl` instead:
+
+```bash
+xcrun simctl uninstall booted com.myapp.MyApp
+```
+
+## Extracting Screenshots from Test Results
+
+### Export Attachments
+
+After tests complete, extract all screenshots from the `.xcresult` bundle:
+
+```bash
+xcrun xcresulttool export attachments \
+  --path ./TestResults.xcresult \
+  --output-path ./Screenshots
+```
+
+This exports all attachments as PNG files with UUID filenames and generates a `manifest.json` with metadata.
+
+### Manifest Structure
+
+The manifest maps UUID filenames to human-readable suggested names:
+
+```json
+[
+  {
+    "attachments": [
+      {
+        "exportedFileName": "F61C0A79-406F-4E57-8901-F05996D7F4E4.png",
+        "suggestedHumanReadableName": "01_Play01_Default_original_light_0_UUID.png",
+        "timestamp": 1772731322.385,
+        "isAssociatedWithFailure": false
+      }
+    ],
+    "testIdentifier": "AppearanceScreenshotTests/testCapture_OriginalLight()"
+  }
+]
+```
+
+### Rename Screenshots
+
+Use the manifest to create human-readable filenames:
+
+```python
+#!/usr/bin/env python3
+import json, os, re, shutil
+
+with open("Screenshots/manifest.json") as f:
+    data = json.load(f)
+
+for entry in data:
+    for item in entry.get("attachments", []):
+        src = f"Screenshots/{item['exportedFileName']}"
+        suggested = item["suggestedHumanReadableName"]
+        # Strip trailing _0_UUID.png
+        clean = re.sub(r"_\d+_[A-F0-9-]+\.png$", ".png", suggested)
+        clean = clean.replace("/", "_")
+        if os.path.exists(src):
+            shutil.copy2(src, f"Screenshots/{clean}")
+```
+
+### Generate a Screenshot Review Website
+
+After renaming screenshots, generate a static HTML page so stakeholders can browse all captured screens in a browser. The script groups images by screen name (the portion before the variant suffix) and displays variants side by side.
+
+```python
+#!/usr/bin/env python3
+"""Generate an HTML gallery from renamed screenshots and open it in the default browser."""
+import os, re, webbrowser
+from collections import defaultdict
+from pathlib import Path
+
+SCREENSHOTS_DIR = "Screenshots"
+OUTPUT_FILE = os.path.join(SCREENSHOTS_DIR, "index.html")
+
+def build_gallery():
+    images = sorted(
+        f for f in os.listdir(SCREENSHOTS_DIR)
+        if f.endswith(".png") and not re.match(r"^[A-F0-9-]{36}\.png$", f)  # skip UUID originals
+    )
+
+    # Group by screen: strip variant suffix (e.g. _original_light.png) to get screen name
+    groups = defaultdict(list)
+    for img in images:
+        # Screen name is everything up to the last two underscore-separated segments before .png
+        # e.g. "01_Play_01_Default_original_light.png" → screen "01_Play_01_Default"
+        stem = Path(img).stem
+        parts = stem.rsplit("_", 2)
+        screen = parts[0] if len(parts) >= 3 else stem
+        groups[screen].append(img)
+
+    html_parts = [
+        "<!DOCTYPE html>",
+        "<html><head><meta charset='utf-8'>",
+        "<title>Screenshot Review</title>",
+        "<style>",
+        "  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; background: #f5f5f7; }",
+        "  h1 { font-size: 1.5rem; }",
+        "  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 0.3rem; }",
+        "  .grid { display: flex; flex-wrap: wrap; gap: 1rem; }",
+        "  .card { background: #fff; border-radius: 8px; padding: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }",
+        "  .card img { max-height: 500px; border-radius: 4px; display: block; }",
+        "  .card .label { font-size: 0.75rem; color: #666; margin-top: 0.3rem; text-align: center; }",
+        "</style></head><body>",
+        "<h1>Screenshot Review</h1>",
+    ]
+
+    for screen, imgs in groups.items():
+        html_parts.append(f"<h2>{screen.replace('_', ' ')}</h2>")
+        html_parts.append("<div class='grid'>")
+        for img in imgs:
+            label = Path(img).stem.replace(screen + "_", "").replace("_", " ")
+            html_parts.append(
+                f"<div class='card'><img src='{img}' alt='{img}'>"
+                f"<div class='label'>{label}</div></div>"
+            )
+        html_parts.append("</div>")
+
+    html_parts.append("</body></html>")
+
+    with open(OUTPUT_FILE, "w") as f:
+        f.write("\n".join(html_parts))
+
+    webbrowser.open(f"file://{os.path.abspath(OUTPUT_FILE)}")
+    print(f"Opened {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    build_gallery()
+```
+
+Run it after extracting and renaming:
+
+```bash
+# Full pipeline: export → rename → generate website
+xcrun xcresulttool export attachments \
+  --path ./TestResults.xcresult \
+  --output-path ./Screenshots
+
+python3 rename_screenshots.py   # the rename script from above
+python3 generate_gallery.py     # generates Screenshots/index.html and opens it
+```
+
+The generated page groups screenshots by screen, shows variant labels (theme + appearance) beneath each image, and automatically opens in the default browser.
+
+### Other xcresulttool Commands
+
+```bash
+# Test summary (pass/fail counts)
+xcrun xcresulttool get test-results summary --path ./TestResults.xcresult
+
+# List all tests
+xcrun xcresulttool get test-results tests --path ./TestResults.xcresult
+
+# Export only failure attachments
+xcrun xcresulttool export attachments \
+  --path ./TestResults.xcresult \
+  --output-path ./FailureScreenshots \
+  --only-failures
+```
+
 ## Page Object Pattern
 
 Encapsulate screen interactions for reuse and readability. This makes tests resilient to UI changes — if a button moves, you update the page object, not every test.
