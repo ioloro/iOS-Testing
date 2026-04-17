@@ -27,7 +27,7 @@ Choose the correct framework based on what you are testing:
 | Contrast and visibility testing | **XCUITest** (accessibility audit) | `import XCTest` |
 | Snapshot/visual regression testing | **XCTest** (+ swift-snapshot-testing) | `import XCTest` |
 | Exit/crash tests (Swift 6.2+) | **Swift Testing** | `import Testing` |
-| Analyzing .trace files from Instruments | **trace2json.py** (preferred) or xctrace CLI | N/A (command-line tool) |
+| Analyzing .trace files from Instruments | **xctrace CLI** | N/A (command-line tool) |
 
 ## Critical Rules
 
@@ -86,22 +86,18 @@ Choose the correct framework based on what you are testing:
 
 You can read and analyze Xcode Instruments `.trace` files directly. When a user provides a `.trace` file:
 
-1. **Run `trace2json.py`** to export all trace data to a single JSON file:
-   ```bash
-   SCRIPT=$(find ~/.claude -name "trace2json.py" -path "*/ios-testing/*" 2>/dev/null | head -1)
-   python3 "$SCRIPT" /path/to/file.trace
-   ```
-   This produces `<trace-name>.json` next to the trace file. Use `--limit N` to cap rows per table, `--schemas a,b,c` to select specific schemas.
-
-2. **Read the JSON file** with the Read tool. Check `metadata` for device/process info and warnings, then examine relevant `tables` entries for analysis.
-
-3. **Analyze the data** — look for hot call stacks, blocked threads, long syscalls, memory pressure, etc.
-
+1. **Export the TOC** with `xctrace export --input /path/to/file.trace --toc` to discover available data tables.
+2. **Export specific tables** to a file using `--xpath` and `--output /tmp/trace_data.xml` (piping large XML loses ref context).
+3. **Parse with Python** (`xml.etree.ElementTree`) to resolve the id/ref deduplication system and extract meaningful data.
 4. **Suggest code improvements** based on the findings.
 
-**Fallback**: If the script is unavailable, use `xctrace export` directly (see the manual workflow in the reference).
+### Critical Gotchas
+- **Use `time-profile` schema** (symbolicated frames), NOT `time-sample` (raw `kperf-bt` hex addresses). This is the #1 time-waster.
+- **`--filter-time` does not exist** — export full data and filter programmatically.
+- **Ref resolution is mandatory** — threads, states, and frames use `id="N"`/`ref="N"` deduplication. Build lookup dicts.
+- **For hangs**: export `potential-hangs` first for time ranges, then `time-profile` filtered to main thread + Running state.
 
-See the [trace analysis reference](trace-analysis.md) for the complete guide including JSON structure, all common schemas by template type, and the manual xctrace fallback workflow.
+See the [trace analysis reference](trace-analysis.md) for the complete guide including hang analysis workflow with Python script, .trace file structure, all schemas, and XML format details.
 
 ## Reference Files
 
