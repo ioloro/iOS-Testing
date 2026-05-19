@@ -1,0 +1,23 @@
+diff --git a/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift b/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift
+index 45e7136..1b8e5e7 100644
+--- a/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift
++++ b/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift
+@@ -127,8 +127,18 @@ private final class FBLogicTestRunOutputs: NSObject {
+     var librariesWithShim = [shimPath]
+     librariesWithShim.append(contentsOf: libraries)
+ 
++    // Apple's Testing.framework (Swift Testing) depends on lib_TestingInterop.dylib
++    // which on iOS 26+ is shipped under iPhoneSimulator.platform/Developer/usr/lib
++    // rather than in the simulator runtime root. Inject DYLD search paths.
++    let developerDir = FBXcodeConfiguration.developerDirectory
++    let simulatorPlatformUsrLib = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/usr/lib")
++    let simulatorPlatformFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks")
++    let simulatorPlatformPrivateFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/PrivateFrameworks")
++
+     var environmentAdditions: [String: String] = [
+       "DYLD_INSERT_LIBRARIES": librariesWithShim.joined(separator: ":"),
++      "DYLD_LIBRARY_PATH": simulatorPlatformUsrLib,
++      "DYLD_FRAMEWORK_PATH": "\(simulatorPlatformFrameworks):\(simulatorPlatformPrivateFrameworks)",
+       "TEST_SHIM_STDOUT_PATH": shimOutputFilePath,
+       "TEST_SHIM_BUNDLE_PATH": bundlePath,
+       "XCTOOL_WAIT_FOR_DEBUGGER": waitForDebugger ? "YES" : "NO",
