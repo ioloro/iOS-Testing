@@ -1,0 +1,24 @@
+--- a/FBSimulatorControl/HID/FBSimulatorHID.m
++++ b/FBSimulatorControl/HID/FBSimulatorHID.m
+@@ -34,7 +34,10 @@
+
+ #pragma mark Initializers
+
+-static const char *SimulatorHIDClientClassName = "SimulatorKit.SimDeviceLegacyHIDClient";
++// On macOS 26+ the Swift runtime no longer translates the dotted "module.class"
++// form to the @objc registration; fall back to the legacy `_TtC` mangling.
++static const char *SimulatorHIDClientClassName = "SimulatorKit.SimDeviceLegacyHIDClient";
++static const char *SimulatorHIDClientClassNameMangled = "_TtC12SimulatorKit24SimDeviceLegacyHIDClient";
+
+ + (dispatch_queue_t)workQueue
+ {
+@@ -44,6 +47,9 @@
+ + (FBFuture<FBSimulatorHID *> *)hidForSimulator:(FBSimulator *)simulator
+ {
+   Class clientClass = objc_lookUpClass(SimulatorHIDClientClassName);
++  if (!clientClass) {
++    clientClass = objc_lookUpClass(SimulatorHIDClientClassNameMangled);
++  }
+   NSParameterAssert(clientClass);
+   NSError *error = nil;
+   SimDeviceLegacyClient *client = [[clientClass alloc] initWithDevice:simulator.device error:&error];

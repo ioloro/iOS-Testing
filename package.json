@@ -1,6 +1,6 @@
 {
   "name": "@ioloro/ios-testing",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Claude Code skill for Swift Testing, XCTest, XCUITest, and Instruments .trace analysis — write correct, modern iOS/macOS tests and diagnose performance issues",
   "keywords": [
     "claude-code",

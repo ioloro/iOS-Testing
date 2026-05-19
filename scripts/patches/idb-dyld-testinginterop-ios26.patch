@@ -1,0 +1,62 @@
+--- a/XCTestBootstrap/Strategies/FBListTestStrategy.swift
++++ b/XCTestBootstrap/Strategies/FBListTestStrategy.swift
+@@ -142,8 +142,18 @@ public class FBListTestStrategy: NSObject {
+     var librariesWithShim = [shimPath]
+     librariesWithShim.append(contentsOf: libraries)
+
++    // Apple's Testing.framework (Swift Testing) depends on lib_TestingInterop.dylib
++    // which on iOS 26+ is shipped under iPhoneSimulator.platform/Developer/usr/lib
++    // rather than in the simulator runtime root. dyld's default search paths
++    // don't include this location, so we have to inject it.
++    let developerDir = FBXcodeConfiguration.developerDirectory
++    let simulatorPlatformUsrLib = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/usr/lib")
++    let simulatorPlatformFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks")
++    let simulatorPlatformPrivateFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/PrivateFrameworks")
++
+     var environment: [String: String] = [
+       "DYLD_INSERT_LIBRARIES": librariesWithShim.joined(separator: ":"),
++      "DYLD_LIBRARY_PATH": simulatorPlatformUsrLib,
++      "DYLD_FRAMEWORK_PATH": "\(simulatorPlatformFrameworks):\(simulatorPlatformPrivateFrameworks)",
+       "TEST_SHIM_OUTPUT_PATH": shimOutputFilePath,
+       "TEST_SHIM_BUNDLE_PATH": bundlePath,
+     ]
+--- a/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift
++++ b/XCTestBootstrap/Strategies/FBLogicTestRunStrategy.swift
+@@ -127,8 +127,18 @@ public class FBLogicTestRunStrategy: NSObject, FBXCTestRunner {
+     var librariesWithShim = [shimPath]
+     librariesWithShim.append(contentsOf: libraries)
+
++    // Apple's Testing.framework (Swift Testing) depends on lib_TestingInterop.dylib
++    // which on iOS 26+ is shipped under iPhoneSimulator.platform/Developer/usr/lib
++    // rather than in the simulator runtime root. Inject DYLD search paths.
++    let developerDir = FBXcodeConfiguration.developerDirectory
++    let simulatorPlatformUsrLib = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/usr/lib")
++    let simulatorPlatformFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks")
++    let simulatorPlatformPrivateFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/PrivateFrameworks")
++
+     var environmentAdditions: [String: String] = [
+       "DYLD_INSERT_LIBRARIES": librariesWithShim.joined(separator: ":"),
++      "DYLD_LIBRARY_PATH": simulatorPlatformUsrLib,
++      "DYLD_FRAMEWORK_PATH": "\(simulatorPlatformFrameworks):\(simulatorPlatformPrivateFrameworks)",
+       "TEST_SHIM_STDOUT_PATH": shimOutputFilePath,
+       "TEST_SHIM_BUNDLE_PATH": bundlePath,
+       "XCTOOL_WAIT_FOR_DEBUGGER": waitForDebugger ? "YES" : "NO",
+--- a/XCTestBootstrap/Configuration/FBTestRunnerConfiguration.swift
++++ b/XCTestBootstrap/Configuration/FBTestRunnerConfiguration.swift
+@@ -193,6 +193,16 @@ public class FBTestRunnerConfiguration: NSObject {
+           hostApplicationAdditionalEnvironment["DYLD_INSERT_LIBRARIES"] = shimPath
+           hostApplicationAdditionalEnvironment[kEnvWaitForDebugger] = testLaunchConfiguration.applicationLaunchConfiguration.waitForDebugger ? "YES" : "NO"
+
++          // Apple's Testing.framework (Swift Testing) needs lib_TestingInterop.dylib
++          // which lives at iPhoneSimulator.platform/Developer/usr/lib on iOS 26+
++          // but isn't on dyld's default search paths inside the simulator.
++          let developerDir = FBXcodeConfiguration.developerDirectory
++          let simPlatformUsrLib = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/usr/lib")
++          let simPlatformFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks")
++          let simPlatformPrivateFrameworks = (developerDir as NSString).appendingPathComponent("Platforms/iPhoneSimulator.platform/Developer/Library/PrivateFrameworks")
++          hostApplicationAdditionalEnvironment["DYLD_LIBRARY_PATH"] = simPlatformUsrLib
++          hostApplicationAdditionalEnvironment["DYLD_FRAMEWORK_PATH"] = "\(simPlatformFrameworks):\(simPlatformPrivateFrameworks)"
++
+           if let coverageDirectoryPath = testLaunchConfiguration.coverageDirectoryPath {
+             let continuousCoverageCollectionMode = testLaunchConfiguration.shouldEnableContinuousCoverageCollection ? "%c" : ""
+             let hostCoverageFile = "coverage_\(hostApplication.bundle.identifier)\(continuousCoverageCollectionMode).profraw"

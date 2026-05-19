@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    name: Build, sign, notarize, release
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Install xcodegen (idb build dep)
+        run: brew install xcodegen
+
+      - name: Pin idb SHA (env)
+        id: idb
+        run: echo "sha=$(cat scripts/idb-sha 2>/dev/null || echo dabc268)" >> "$GITHUB_OUTPUT"
+
+      - name: Build FB frameworks from source
+        run: scripts/fetch-frameworks.sh "${{ steps.idb.outputs.sha }}"
+
+      - name: Build iostesting (release)
+        working-directory: cli
+        run: swift build -c release
+
+      # Code signing + notarization. Requires repo secrets:
+      #   APPLE_DEVELOPER_ID_APPLICATION    — full identity name, e.g. "Developer ID Application: Your Name (TEAMID)"
+      #   APPLE_ID                          — Apple ID email
+      #   APPLE_ID_PASSWORD                 — app-specific password
+      #   APPLE_TEAM_ID                     — 10-char team ID
+      #   APPLE_CERT_P12_BASE64             — exported .p12 cert, base64-encoded
+      #   APPLE_CERT_P12_PASSWORD           — password for the .p12
+      # See HomebrewFormula/README.md and DEVELOPER_GUIDE.md for setup.
+      - name: Import signing cert
+        env:
+          P12_B64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          P12_PW: ${{ secrets.APPLE_CERT_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${P12_B64:-}" ]]; then
+            echo "::warning::APPLE_CERT_P12_BASE64 not set — skipping sign + notarize. Release will be unsigned."
+            echo "SIGNING_SKIPPED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEYCHAIN=build.keychain
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$P12_B64" | base64 --decode > /tmp/cert.p12
+          security import /tmp/cert.p12 -k "$KEYCHAIN" -P "$P12_PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          rm /tmp/cert.p12
+
+      - name: Sign binary + Frameworks
+        if: env.SIGNING_SKIPPED != '1'
+        env:
+          IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+        run: |
+          set -euo pipefail
+          BIN=cli/.build/release/iostesting
+          # Sign each embedded framework's executable first, then the binary.
+          for fw in cli/Frameworks/*.framework; do
+            exe="$fw/Versions/A/$(basename "$fw" .framework)"
+            codesign --force --options=runtime --timestamp --sign "$IDENTITY" "$exe"
+          done
+          codesign --force --options=runtime --timestamp --sign "$IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+      - name: Assemble release tarball
+        run: |
+          set -euo pipefail
+          STAGE=stage/iostesting
+          mkdir -p "$STAGE/bin" "$STAGE/Frameworks"
+          cp cli/.build/release/iostesting "$STAGE/bin/"
+          cp -R cli/Frameworks/*.framework "$STAGE/Frameworks/"
+          cp THIRD_PARTY_LICENSES.txt LICENSE README.md CHANGELOG.md STATUS.md "$STAGE/"
+          tar -C stage -czf "iostesting-${GITHUB_REF_NAME}-macos-arm64.tar.gz" iostesting
+          shasum -a 256 "iostesting-${GITHUB_REF_NAME}-macos-arm64.tar.gz" | tee tarball.sha256
+
+      - name: Notarize tarball
+        if: env.SIGNING_SKIPPED != '1'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="iostesting-${GITHUB_REF_NAME}-macos-arm64.tar.gz"
+          xcrun notarytool submit "$ARCHIVE" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            iostesting-${{ github.ref_name }}-macos-arm64.tar.gz
+            tarball.sha256
+          body_path: CHANGELOG.md
+          generate_release_notes: false

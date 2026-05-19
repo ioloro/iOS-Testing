@@ -1,0 +1,4 @@
+module FBBridge {
+    umbrella header "FBBridge.h"
+    export *
+}

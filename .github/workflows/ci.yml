@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build CLI + run tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.app
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Install xcodegen (idb build dep)
+        run: brew install xcodegen
+
+      - name: Read pinned idb SHA
+        id: idb
+        run: echo "sha=$(cat scripts/idb-sha)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache built FB frameworks
+        id: cache-frameworks
+        uses: actions/cache@v4
+        with:
+          path: cli/Frameworks
+          key: idb-frameworks-${{ steps.idb.outputs.sha }}-${{ hashFiles('scripts/patches/*.patch') }}
+
+      - name: Build FB frameworks from source (if not cached)
+        if: steps.cache-frameworks.outputs.cache-hit != 'true'
+        run: scripts/fetch-frameworks.sh "${{ steps.idb.outputs.sha }}"
+
+      - name: Build CLI
+        working-directory: cli
+        run: swift build -c release
+
+      - name: Stage frameworks next to the binary (for dyld @rpath resolution)
+        run: |
+          ln -sf "$(pwd)/cli/Frameworks" cli/.build/arm64-apple-macosx/release/Frameworks
+          # Also for the debug build the test target uses
+          mkdir -p cli/.build/arm64-apple-macosx/debug
+          ln -sf "$(pwd)/cli/Frameworks" cli/.build/arm64-apple-macosx/debug/Frameworks
+
+      - name: Test
+        working-directory: cli
+        run: |
+          # Test target inherits the executable's rpath but lands in its own
+          # xctest bundle; symlink Frameworks next to that too.
+          swift build  # ensures the .xctest bundle exists
+          mkdir -p .build/arm64-apple-macosx/debug/iostestingPackageTests.xctest/Contents/MacOS
+          ln -sf "$(pwd)/Frameworks" .build/arm64-apple-macosx/debug/iostestingPackageTests.xctest/Contents/MacOS/Frameworks
+          swift test
+        env:
+          IOSTESTING_BACKEND: simctl
+
+  hook-regression:
+    name: PreToolUse hook regression
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hook block / allow cases
+        run: |
+          set -eu
+          declare -a cases=(
+            "BLOCK|xcodebuild -scheme MyApp -destination iphonesimulator test"
+            "ALLOW|xcodebuild -scheme MyApp build"
+            "ALLOW|xcodebuild -scheme MyApp build-for-testing"
+            "ALLOW|xcodebuild -scheme MyApp test-without-building"
+            "BLOCK|xcrun simctl boot ABC"
+            "ALLOW|xcrun simctl list"
+            "BLOCK|xcrun simctl io ABC screenshot /tmp/x.png"
+            "ALLOW|echo xcrun simctl boot ABC"
+            "BLOCK|xcrun simctl spawn ABC xctest /Tests"
+            "BLOCK|xcrun simctl spawn ABC log stream"
+            "ALLOW|xcrun simctl runtime list"
+            "ALLOW|xcrun notarytool submit"
+          )
+          failed=0
+          for spec in "${cases[@]}"; do
+            verdict="${spec%%|*}"
+            cmd="${spec#*|}"
+            exit_code=$(echo "{\"tool_input\":{\"command\":\"$cmd\"}}" | hooks/iostesting-guard.sh >/dev/null 2>&1; echo $?)
+            if [[ "$verdict" == "BLOCK" && "$exit_code" != "2" ]]; then
+              echo "FAIL  expected BLOCK got exit=$exit_code  $cmd"; failed=1
+            elif [[ "$verdict" == "ALLOW" && "$exit_code" != "0" ]]; then
+              echo "FAIL  expected ALLOW got exit=$exit_code  $cmd"; failed=1
+            else
+              echo "OK    $verdict  $cmd"
+            fi
+          done
+          exit $failed
+
+  version-drift:
+    name: Version drift check
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-version-drift.sh

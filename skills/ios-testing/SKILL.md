@@ -1,5 +1,6 @@
 ---
 name: ios-testing
+version: "2.0.0"
 description: >
   Use when writing, modifying, or reviewing tests for iOS/macOS apps.
   Activates for Swift Testing (@Test, #expect, @Suite), XCTest (XCTestCase, measure, XCTAssert),
@@ -11,6 +12,56 @@ description: >
 # iOS Testing Skill
 
 You are an expert in Apple platform testing. Follow these rules strictly.
+
+## Decision flowchart (READ FIRST)
+
+```
+   ┌─────────────────────────────────┐
+   │  User wants tests written or run │
+   └────────────────┬────────────────┘
+                    │
+                    ▼
+        ┌────────────────────────┐
+        │  What are we testing?  │
+        └─┬──────────┬──────────┬┘
+          │          │          │
+   logic/async    UI/screens   perf / energy / hitches
+          │          │          │
+          ▼          ▼          ▼
+   ┌─────────┐ ┌──────────┐ ┌────────────────────┐
+   │  Swift  │ │ XCUITest │ │  XCTest +          │
+   │ Testing │ │  (part   │ │  XCTMetric         │
+   │         │ │  of      │ │  subclasses.       │
+   │ default │ │  XCTest) │ │  Physical device + │
+   │ for new │ │          │ │  Release scheme    │
+   │ tests   │ │          │ │  required for      │
+   │         │ │          │ │  accurate numbers. │
+   └────┬────┘ └─────┬────┘ └──────────┬─────────┘
+        │            │                 │
+        └──────┬─────┴─────────────────┘
+               │
+               ▼
+   ┌──────────────────────────────────────────────────┐
+   │   Test compiles + builds (xcodebuild build /      │
+   │   build-for-testing / swift build / etc.)         │
+   └──────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+   ┌──────────────────────────────────────────────────┐
+   │   How do we run it?                              │
+   ├──────────────────────────────────────────────────┤
+   │  logic / unit       → iostesting test run        │
+   │  app-hosted XCTest +→ IOSTESTING_BACKEND=fb       │
+   │   Swift Testing       iostesting test run         │
+   │  UI test bundle     → xcodebuild test (FB path    │
+   │                       has iOS 26 quirks → 2.1)    │
+   │  performance        → xcodebuild test on real     │
+   │                       device, Release scheme,     │
+   │                       perf-only scheme           │
+   └──────────────────────────────────────────────────┘
+```
+
+The two iron rules: **(1) do not invent assertion syntax** — when in doubt about `#expect(throws:)`, `try #require`, `confirmation`, or `@Test(arguments:)`, read [swift-testing.md](swift-testing.md) before writing. **(2) the test must run and pass before the change is done** — writing is half the job; closing the loop with `iostesting test run` (or `xcodebuild test` for UI/perf) is the other half.
 
 ## Framework Selection
 
@@ -45,6 +96,24 @@ Choose the correct framework based on what you are testing:
 6. **Performance tests require XCTest**. Swift Testing has no `measure {}` equivalent.
 7. **UI tests require XCUITest** (which is part of XCTest). Swift Testing cannot drive UI.
 8. **Each test gets a fresh instance**. Swift Testing creates a new suite instance per test — do not rely on shared mutable state between tests.
+9. **Do not invent assertion syntax.** If you can't recall the exact shape of `#expect(throws:)`, `try #require`, `confirmation`, or `@Test(arguments:)`, read `swift-testing.md` before writing it. Hallucinated APIs compile-fail and waste a build cycle. The cost of looking is one read; the cost of guessing is one cycle.
+
+## Common Mistakes
+
+| Mistake | Why it's wrong | Use instead |
+|---|---|---|
+| `#expect(throws: SomeError())` | takes an error **type** or **value-matching closure**, not an instance | `#expect(throws: SomeError.self)` or `#expect(throws: SomeError.tooShort) { ... }` |
+| `try #require` placed inside `#expect(...)` | `#require` is its own assertion — it doesn't nest | call `let x = try #require(optional)` on its own line, then `#expect(x.foo == ...)` |
+| `confirmation { confirm in confirm.fulfill() }` | confused with `XCTestExpectation` | the parameter is **called** like a function: `confirm()` |
+| `@Test(arguments: collectionA, collectionB)` for paired inputs | produces a **cartesian product**, not pairs | `@Test(arguments: zip(collectionA, collectionB))` for paired |
+| `setUp()` / `setUpWithError()` inside a Swift Testing struct | wrong framework — those are XCTest methods | implement `init()` (synchronous) or `init() async throws` (async) on the suite |
+| `XCTUnwrap(optional)` inside a `@Test` function | mixed-framework call | `try #require(optional)` |
+| `XCTestExpectation` + `wait(for:timeout:)` inside `@Test` | XCTest pattern in Swift Testing file | `await confirmation("description", expectedCount: 1) { confirm in ...; confirm() }` |
+| `measure { ... }` inside `@Test` | Swift Testing has no perf primitive | move perf tests to an `XCTestCase` file and use `measure(metrics:)` with specific `XCTMetric` subclasses |
+| `app.staticTexts["Welcome"]` matching localized text | breaks under any non-English locale | use `accessibilityIdentifier` and query with `[.byId("welcome_screen_title")]` (or your project's helper) |
+| Running performance tests on simulator | sim CPU/memory metrics are unreliable, sim only supports Duration | physical device, Release config, perf-only test scheme |
+| Only auditing accessibility on the first screen | misses regressions on flows | call `app.performAccessibilityAudit(for: [.contrast, .dynamicType])` on every screen |
+| Hardcoded `UIColor.black` / `Color.white` | breaks dark mode + dynamic type contrast | semantic: `UIColor.label`, `.systemBackground`, SwiftUI `.primary` |
 
 ## Best Practices
 
@@ -82,6 +151,77 @@ Choose the correct framework based on what you are testing:
 - Using hardcoded colors (`UIColor.black`, `Color.white`) instead of semantic colors.
 - Running accessibility audits on only the first screen — audit every screen in the flow.
 
+## Running Tests
+
+Writing the test is half the job. The test must run and pass before the change is considered done.
+
+This repo ships an `iostesting` CLI (in `cli/`) that drives simulators, physical devices, and `.xctest` bundles. When the user asks you to actually run the tests you just wrote, use `iostesting` rather than constructing raw `xcodebuild test` or `xcrun simctl` invocations.
+
+**Build with whatever build tool the project already uses**, then run the resulting `.xctest` bundle:
+
+```bash
+# build the test bundle via the project's build tool (xcodebuild, swift build, etc.)
+# then drive execution with iostesting:
+
+iostesting sim list --state Booted                                # find or boot a sim
+iostesting sim boot "iPhone 17 Pro"                               # idempotent
+iostesting test list path/to/MyTests.xctest                       # confirm tests compiled in
+iostesting test run path/to/MyTests.xctest --json                 # NDJSON events
+iostesting test run path/to/MyTests.xctest --filter MySuite/testThing
+```
+
+**When in doubt, ask the binary.** Every command supports `--examples`:
+
+```bash
+iostesting test run --examples       # curated snippets — never guess flag shapes
+iostesting sim location --examples
+iostesting stop --examples
+```
+
+**Two backends — pick per test type:**
+- **Default `IOSTESTING_BACKEND=simctl`** — shells to `xcrun simctl spawn xctest`. Logic tests only. Works on any Mac with Xcode installed.
+- **`IOSTESTING_BACKEND=fb`** — direct linkage against XCTestBootstrap. Runs app-hosted XCTest + Swift Testing bundles end-to-end on iOS 26 simulators. Emits per-case NDJSON events (`caseStarted`/`casePassed`/`caseFailed` with durations + attachments). Set this env var when you need to run real test bundles via iostesting.
+
+**2.0.0 limitations:**
+- **XCUITest via the FB backend has known iOS 26 quirks** (DTX handshake stall / `.xctestrun` write fail). Use `xcodebuild test` for UI tests until 2.1.
+- **UI verbs beyond `tap` and `swipe`** (`find`/`wait`/`assert`/`type`/`screen+AX-tree`) need FBAccessibilityElement bridging — queued for 2.1.
+- **Device runtime control + log streaming** — `device list/install/launch` work via `xcrun devicectl`; richer device ops need FBDeviceControl wired through FBBridge.
+- **Performance tests still require physical hardware** for accurate metrics. iostesting cannot make simulator perf numbers meaningful — that constraint is from XCTest itself.
+
+**Decision rule per test type:**
+- Unit / logic Swift Testing or XCTest, no host app → `iostesting test run` (default simctl backend is enough). Run after writing.
+- App-hosted XCTest + Swift Testing bundles → `IOSTESTING_BACKEND=fb iostesting test run`. Auto-detects the host app from the bundle's `.app/PlugIns/` parent.
+- UI tests (XCUITest) → still `xcodebuild test` in 2.0.0. iostesting's XCUITest path lands cleanly in 2.1.
+- Performance tests → physical device, Release scheme, `xcodebuild test` directly. Do not run on simulator.
+
+**Config makes flags implicit.** Once `iostesting config set --sim "iPhone 17 Pro" --bundle-id com.example.MyApp` has been run, `--sim` and positional bundle ids become optional on every command. Use `iostesting config show` to see what's bound. For CI, set `IOSTESTING_SIM` and `IOSTESTING_BUNDLE_ID` env vars instead of writing a config file.
+
+**App registry + short IDs.** `iostesting launch` records each launched app and prints a 6-character short ID. `iostesting stop <short-id>` and `iostesting logs --bundle-id <short-id>` resolve sim + bundle automatically — no need to retype them:
+
+```bash
+$ iostesting launch com.example.MyApp
+Launched com.example.MyApp on iPhone 17 Pro (pid 12345) [id ab12kw]
+
+$ iostesting logs --bundle-id ab12kw       # sim + bundle resolved from registry
+$ iostesting stop ab12kw
+```
+
+`iostesting apps list` shows the registry; `iostesting apps prune` clears terminated records.
+
+**Physical devices.** `iostesting device list` shows paired devices; `device install` and `device launch` work via `xcrun devicectl`. Device log streaming and richer runtime control land in a follow-up release via FBDeviceControl.
+
+**Other useful sim ops you don't have to remember the simctl flags for:**
+
+```bash
+iostesting sim appearance light          # or dark — for screenshot tests
+iostesting sim media-add ./fixtures/*.jpg
+iostesting sim location --set "37.7749,-122.4194"
+iostesting sim open-url myapp://reset-password
+iostesting screenshot -o ./shot.png
+```
+
+**Optional enforcement hook.** The repo ships `hooks/iostesting-guard.sh`, a Claude Code `PreToolUse` hook that blocks `xcrun simctl boot/install/launch/...` and `xcodebuild test` and suggests the `iostesting` equivalent. See `hooks/README.md` for install instructions. Without the hook the skill is advice; with it, it's a contract.
+
 ## Analyzing .trace Files
 
 You can read and analyze Xcode Instruments `.trace` files directly. When a user provides a `.trace` file:
@@ -106,6 +246,7 @@ For detailed patterns and code examples, see:
 - [XCTest performance, power, and energy testing](xctest.md)
 - [XCUITest UI automation and animation testing](xcuitest.md)
 - [Instruments .trace file analysis](trace-analysis.md)
+- For running tests via the iostesting CLI: see `../../cli/README.md` in this repo.
 
 ## When Generating Tests
 

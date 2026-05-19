@@ -6,7 +6,7 @@
 ._*
 
 # Custom folder icons
-Icon
+Icon
 
 # Volume root files
 .DocumentRevisions-V100
@@ -17,3 +17,14 @@ Icon
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
 *.pyc
+
+### Swift Package Manager (cli/)
+cli/.build/
+cli/.swiftpm/
+# Package.resolved IS committed — locks dependency versions for reproducible builds of the executable
+
+### v0.2 framework vendoring — built by scripts/fetch-frameworks.sh
+cli/Frameworks/
+
+### iostesting per-project config (user state, not source)
+.iostesting/
