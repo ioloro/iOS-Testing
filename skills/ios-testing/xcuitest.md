@@ -230,3 +230,33 @@ struct LoginPage {
 | Localized string matching | Use `accessibilityIdentifier` |
 | Shared state | Reset via launch arguments |
 | Network dependency | Mock data via launch environment |
+
+## System Alert Handling
+
+`XCUIApplication().addUIInterruptionMonitor` is the documented Apple API for system alerts. It works for the **initial** CLLocationManager prompt ("When in Use / Once / Don't Allow") if your test code calls `app.swipeUp()` or `app.tap()` (anything that triggers the host app's run loop) right after the prompt fires.
+
+It does **not** reliably catch:
+
+- **iOS 26's location-upgrade prompt** ("Allow X to also use your location even when you are not using the app?"). SpringBoard owns this dialog, not the host app. The monitor is scoped to the host's process, so SpringBoard-owned modals never trigger it.
+- **Notification, tracking, and "Allow Once" → second-time grants** that fire mid-test from a process other than the host app.
+- Prompts that fire while the host app's run loop is stalled in a `waitForExistence` predicate that never resolves (because the prompt itself blocks the element from appearing).
+
+When in doubt, layer the iostesting fallbacks on top of your interruption monitor. They run outside the XCUITest process:
+
+```bash
+# Pre-grant the auth state so the prompt never fires (works for location-always).
+IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+  --privacy-grant all-location
+
+# Background OCR-watcher: polls the sim, taps any system prompt button by label.
+IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+  --auto-dismiss-alerts
+
+# Both together — pre-empt what we can, watcher catches the rest.
+IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+  --privacy-grant all-location --auto-dismiss-alerts --termination-timeout 300
+```
+
+Default watcher labels: `Keep Only While Using`, `Allow While Using App`, `Allow Once`, `Don't Allow`, `OK`, `Allow`. Override with `--auto-dismiss-label`.
+
+If you need a one-shot dismissal from inside a test setup script (e.g. before launching the runner), call `iostesting alerts dismiss` directly.

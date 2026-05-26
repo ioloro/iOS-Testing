@@ -1,6 +1,6 @@
 ---
 name: ios-testing
-version: "2.0.0"
+version: "2.2.0"
 description: >
   Use when writing, modifying, or reviewing tests for iOS/macOS apps.
   Activates for Swift Testing (@Test, #expect, @Suite), XCTest (XCTestCase, measure, XCTAssert),
@@ -219,6 +219,57 @@ iostesting sim location --set "37.7749,-122.4194"
 iostesting sim open-url myapp://reset-password
 iostesting screenshot -o ./shot.png
 ```
+
+## SpringBoard alerts XCUITest can't reach (iOS 26)
+
+XCUITest's `addUIInterruptionMonitor` is scoped to the app under test. It catches the **initial** CLLocationManager prompt ("When in Use / Once / Don't Allow") but reliably misses SpringBoard-owned modals that fire mid-test — most notably iOS 26's location-upgrade prompt:
+
+> Allow "X" to also use your location even when you are not using the app?
+> [Keep Only While Using]   [Change to Always Allow]
+
+The test stalls while the runner tries to interact with elements behind the modal, eventually hitting `--termination-timeout` with "host application process stalled".
+
+**Two layered fixes, both wired into `iostesting test run`:**
+
+1. **Pre-grant the privacy state before the runner launches.** `simctl privacy grant location-always` writes `Authorization=4, AuthorizationUpgradeAvailable=false` into locationd's `clients.plist`. The upgrade prompt then never fires because iOS sees the auth is already at Always:
+
+   ```bash
+   IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+     --privacy-grant all-location
+   ```
+
+   The grant MUST happen after the app is installed (locationd needs the bundle path). `iostesting test run` does the install + grant in the right order.
+
+2. **Background watcher with OCR-driven dismissal.** When a prompt is going to fire regardless (notifications, tracking, second-time grants), spawn a watcher that screenshots the sim every 2s, OCRs the screen with Vision, and taps any matching button:
+
+   ```bash
+   IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+     --auto-dismiss-alerts
+   ```
+
+   Belt-and-suspenders combination:
+
+   ```bash
+   IOSTESTING_BACKEND=fb iostesting test run ./MyAppUITests.xctest \
+     --privacy-grant all-location \
+     --auto-dismiss-alerts \
+     --termination-timeout 300
+   ```
+
+Defaults cover the common labels: `Keep Only While Using`, `Allow While Using App`, `Allow Once`, `Don't Allow`, `OK`, `Allow`. Override with `--auto-dismiss-label`.
+
+Standalone alert tools (when not running a full test):
+
+```bash
+IOSTESTING_BACKEND=fb iostesting alerts dismiss            # one-shot, exit 2 on no match
+IOSTESTING_BACKEND=fb iostesting alerts watch --duration 120 --json
+IOSTESTING_BACKEND=fb iostesting privacy grant --all-location com.example.MyApp
+```
+
+**When to reach for which:**
+- App requires "Always" location for a background task → `--privacy-grant all-location`.
+- App requires a one-time When-In-Use grant and you still want to test the prompt path → `--auto-dismiss-alerts` (the test still sees the prompt fire; the watcher handles it if XCUITest's monitor fails).
+- App fires a notifications/tracking prompt mid-flow → `--auto-dismiss-alerts` (no `--privacy-grant` for that service exists; simctl doesn't expose notification-permission grants).
 
 **Optional enforcement hook.** The repo ships `hooks/iostesting-guard.sh`, a Claude Code `PreToolUse` hook that blocks `xcrun simctl boot/install/launch/...` and `xcodebuild test` and suggests the `iostesting` equivalent. See `hooks/README.md` for install instructions. Without the hook the skill is advice; with it, it's a contract.
 

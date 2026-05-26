@@ -178,11 +178,15 @@ struct SimctlBackend: Backend {
         bundlePath: URL,
         hostApp: URL?,
         filters: [String],
+        terminationTimeoutSeconds: Double,
         onEvent: @Sendable @escaping (TestEvent) -> Void
     ) async throws {
         if hostApp != nil {
             throw BackendError(message: "Host-app tests via the simctl backend are logic-only. Set IOSTESTING_BACKEND=fb to run app-hosted tests via XCTestBootstrap.")
         }
+        // simctl logic-only runs don't expose a separate post-test termination
+        // wait — that knob is FB-backend specific. Accepted for API symmetry.
+        _ = terminationTimeoutSeconds
         var args = ["simctl", "spawn", udid, "xctest"]
         for f in filters {
             args.append(contentsOf: ["-XCTest", f])
@@ -223,6 +227,26 @@ struct SimctlBackend: Backend {
         _ = try await Shell.runChecked(xcrun, ["simctl", "location", udid, "clear"])
     }
 
+    func startLocationTrack(udid: String, waypoints: [(latitude: Double, longitude: Double)], intervalSeconds: Double) async throws {
+        guard !waypoints.isEmpty else {
+            throw BackendError(message: "startLocationTrack requires at least one waypoint")
+        }
+        // simctl's `start` requires >=2 waypoints. With exactly one waypoint we
+        // can't interpolate — fall through to `set` for a one-shot override.
+        if waypoints.count == 1 {
+            try await setLocation(udid: udid, latitude: waypoints[0].latitude, longitude: waypoints[0].longitude)
+            return
+        }
+        // `simctl location <udid> start [--interval=N] <lat,lon> <lat,lon>...`
+        var args = ["simctl", "location", udid, "start"]
+        // Note: simctl wants the value glued via `=` (e.g. `--interval=1.0`).
+        args.append("--interval=\(intervalSeconds)")
+        for pt in waypoints {
+            args.append("\(pt.latitude),\(pt.longitude)")
+        }
+        _ = try await Shell.runChecked(xcrun, args)
+    }
+
     func pressButton(udid: String, button: String) async throws {
         // Map friendly names to simctl io button names.
         let mapped: String
@@ -247,6 +271,17 @@ struct SimctlBackend: Backend {
 
     func openURL(udid: String, url: String) async throws {
         _ = try await Shell.runChecked(xcrun, ["simctl", "openurl", udid, url])
+    }
+
+    func setSimEnv(udid: String, key: String, value: String) async throws {
+        // `simctl spawn <udid> launchctl setenv KEY VALUE` bridges KEY=VALUE into
+        // the sim's launchd environment so newly-spawned processes inherit it.
+        // Existing processes are unaffected.
+        _ = try await Shell.runChecked(xcrun, ["simctl", "spawn", udid, "launchctl", "setenv", key, value])
+    }
+
+    func unsetSimEnv(udid: String, key: String) async throws {
+        _ = try await Shell.runChecked(xcrun, ["simctl", "spawn", udid, "launchctl", "unsetenv", key])
     }
 
     // MARK: - Helpers

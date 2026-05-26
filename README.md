@@ -77,9 +77,15 @@ The skill installs to `~/.claude/plugins/` and activates on test-related request
 cd cli
 swift build -c release
 # Copy or symlink .build/release/iostesting to a directory on PATH
+
+# One-time: merge iostesting's permission allowlist into ~/.claude/settings.json
+# so Claude Code stops prompting for `xcrun simctl spawn`, `swift build`, etc.
+iostesting setup
 ```
 
 Requires Xcode 14+ and Swift 6 (tested on Swift 6.3 / Xcode 26.4).
+
+`iostesting setup` is idempotent. It preserves unknown keys + the order of any pre-existing `permissions.allow` entries, and only appends the curated iostesting list (no MCP entries, no machine-specific paths). Run with `--dry-run` to preview the diff.
 
 ### Hook (optional)
 
@@ -112,7 +118,7 @@ Then restart Claude Code. See [`hooks/README.md`](hooks/README.md) for details.
 
 ### CLI (`cli/`)
 
-The `iostesting` Swift CLI runs the tests Claude writes. 12 top-level commands, 29 leaves:
+The `iostesting` Swift CLI runs the tests Claude writes. 13 top-level commands, 30 leaves:
 
 ```
 config show / get / set / reset                       # eliminate boilerplate
@@ -125,6 +131,7 @@ apps list / prune                                     # the registry
 device list / install / launch                        # via xcrun devicectl
 test list / run                                       # NDJSON event stream
 licenses
+setup                                                 # merge permissions into ~/.claude/settings.json
 ```
 
 Every command supports `--json` (or NDJSON for streaming) and `--examples` (anti-hallucination escape valve). Config is project (`./.iostesting/config.json`) or global (`~/.config/iostesting/config.json`), with `IOSTESTING_SIM` / `IOSTESTING_BUNDLE_ID` env vars for stateless CI invocation.

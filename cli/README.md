@@ -6,7 +6,7 @@ Build-tool agnostic: bring your own build (xcodebuild, swift build, Bazel, whate
 
 ## Status
 
-**v2.0.0 (current).** Two backends behind a single CLI:
+**v2.2.0 (current).** Two backends behind a single CLI:
 
 - **`IOSTESTING_BACKEND=simctl` (default)** — shells out to `xcrun simctl` / `xcrun devicectl`. Works on any Mac with Xcode 14+.
 - **`IOSTESTING_BACKEND=fb`** — direct linkage against the four MIT-licensed Meta frameworks (FBControlCore / FBSimulatorControl / FBDeviceControl / XCTestBootstrap). Unlocks UI automation (`tap`, `swipe`), Swift Testing bundles end-to-end, full app lifecycle via FB framework calls, NDJSON event streaming for test runs. See `scripts/fetch-frameworks.sh` and `../scripts/patches/` for the build pipeline + three macOS-26 compat patches.
@@ -23,7 +23,20 @@ swift build -c release
 
 Requires Xcode 14+ and Swift 6 (tested on Swift 6.3 / Xcode 26.4).
 
-## Command surface (29 leaves under 12 top-level)
+## Setup
+
+Claude Code plugins cannot ship permission allowlists via their manifest (only `agent` and `subagentStatusLine` keys are supported in plugin `settings.json`). Without setup, every fresh install of `@ioloro/ios-testing` hits Claude Code permission prompts for `xcrun simctl spawn`, `xcrun simctl location`, `swift build`, `iostesting:*`, etc.
+
+```bash
+iostesting setup            # merge iostesting permissions into ~/.claude/settings.json
+iostesting setup --dry-run  # preview the diff without writing
+iostesting setup --print    # dump the merged file to stdout, don't write
+iostesting setup --path PATH  # override settings file location (for testing)
+```
+
+Idempotent. Running twice is a no-op. The command preserves unknown top-level keys, sibling keys inside `permissions` (e.g. `deny`), and the order of any pre-existing `allow` entries. It only adds the curated iostesting list. No MCP entries and no machine-specific full paths.
+
+## Command surface (30 leaves under 13 top-level)
 
 ### Config (eliminate boilerplate)
 
@@ -51,11 +64,16 @@ iostesting sim create --name <n> --device-type <t> --runtime <r>
 iostesting sim prune                                  # delete unavailable
 
 iostesting sim media-add <files>...                   # photos/videos to camera roll
-iostesting sim location --set "37.7749,-122.4194"     # override location
+iostesting sim location --set "37.7749,-122.4194"     # override location (single point)
+iostesting sim location --gpx ./round.gpx \           # replay a GPX track (default --interval=1, --max-waypoints=1500)
+                       [--interval 1] [--max-waypoints 1500]
+iostesting sim location --status                      # iostesting-recorded location state for this sim
 iostesting sim location --clear
 iostesting sim button home|lock|siri|side|apple-pay
 iostesting sim appearance light|dark
 iostesting sim open-url <url>                         # universal links + custom schemes
+iostesting sim env --set KEY=VALUE [--set ...]        # bridge launchd env into the sim
+iostesting sim env --unset KEY [--unset ...]          # newly-launched apps inherit; existing ones don't
 ```
 
 ### Apps (lifecycle + registry)
@@ -101,16 +119,63 @@ Backed by `xcrun devicectl`. A follow-up release will swap to FBDeviceControl fo
 
 ```
 iostesting test list <path/to/MyTests.xctest>
-iostesting test run <path/to/MyTests.xctest> [--filter Suite/test...]... [--json]
+iostesting test run <path/to/MyTests.xctest> [--filter Suite/test...]... \
+                                              [--termination-timeout 120] \
+                                              [--sim-env KEY=VALUE]... \
+                                              [--privacy-grant SERVICE]... \
+                                              [--auto-dismiss-alerts] \
+                                              [--auto-dismiss-label LABEL]... \
+                                              [--auto-dismiss-bundle-id BID] \
+                                              [--json]
 ```
 
 `test run` emits NDJSON `caseStarted` / `casePassed` / `caseFailed` / `suiteFinished` / `runFinished` events when `--json` is passed.
+
+- `--termination-timeout` (FB backend) controls how long iostesting waits for the host app to terminate after the test method exits. Default 120s. Bump up to 600s when the app holds background subscriptions or in-flight network requests that delay clean shutdown.
+- `--sim-env KEY=VALUE` sets a launchd env var on the sim before the runner boots, so newly-launched apps inherit it. Equivalent to `iostesting sim env --set KEY=VALUE` followed by the test run.
+- `--privacy-grant <service>` pre-grants a `simctl privacy` service to the target app before the runner launches. Use `all-location` shorthand to grant both `location` and `location-always` (preempts iOS 26's "also use location" upgrade prompt that XCUITest's `addUIInterruptionMonitor` cannot catch). Repeatable.
+- `--auto-dismiss-alerts` spawns a background watcher (`iostesting alerts watch`) that polls the sim every 2 seconds, OCRs the screen for known system-alert button labels, and taps them via FBSimulatorHID. Catches SpringBoard-owned modals (location upgrade, notifications, tracking, etc.) that the host-app's interruption monitor misses. Watcher tears down on test completion.
+- `--auto-dismiss-label <label>` overrides the default label list (`Keep Only While Using`, `Allow While Using App`, `Allow Once`, `Don't Allow`, `OK`, `Allow`). Repeatable.
+- `--auto-dismiss-bundle-id <bid>` resolves the target app for `--privacy-grant` when it can't be inferred from the host runner's sibling app's Info.plist.
+
+### Privacy
+
+```
+iostesting privacy grant <service> <bundle-id> [--all-location]
+iostesting privacy revoke <service> <bundle-id>
+iostesting privacy reset <service> [<bundle-id>]
+```
+
+Wraps `xcrun simctl privacy` with safer semantics. The `--all-location` convenience grants both `location` and `location-always` in the order that produces `Authorization=4, AuthorizationUpgradeAvailable=false` in locationd's `clients.plist` — the state that suppresses iOS 26's "Allow X to also use your location even when you are not using the app?" upgrade prompt entirely.
+
+Run AFTER installing the app (locationd needs the bundle path resolved). Recognized services: `all`, `calendar`, `contacts`, `contacts-limited`, `location`, `location-always`, `photos`, `photos-add`, `media-library`, `microphone`, `motion`, `reminders`, `siri`.
+
+### Alerts
+
+```
+iostesting alerts dismiss [--label LABEL]... [--min-confidence 0.5] [--json]
+iostesting alerts watch   [--label LABEL]... [--duration 600] [--interval 2.0] [--json]
+```
+
+Screenshot the sim, OCR it via the Vision framework, find a button whose recognized text contains one of the candidate labels, and tap its centroid via FBSimulatorHID. `dismiss` is one-shot (exit 2 if no match); `watch` polls in a loop until `--duration` expires.
+
+Defaults catch the most common iOS prompts (location upgrade, when-in-use, allow-once, don't-allow, OK, allow). Override with `--label` for app-specific dialogs. The watcher is what `test run --auto-dismiss-alerts` spawns under the hood — call it manually if you want fine-grained control.
+
+Requires `IOSTESTING_BACKEND=fb` (the tap path uses FBSimulatorHID; the OCR path uses Vision, which is bundled with macOS).
 
 ### Licenses
 
 ```
 iostesting licenses     # full third-party notices (MIT, Apache 2.0)
 ```
+
+### Setup (post-install)
+
+```
+iostesting setup [--dry-run] [--print] [--path PATH] [--json]
+```
+
+Merges the curated iostesting permission allowlist into `~/.claude/settings.json` so Claude Code stops prompting for `xcrun simctl spawn`, `swift build`, `iostesting:*`, etc. See the **Setup** section above.
 
 ### `--examples` on every command
 
@@ -126,7 +191,14 @@ This is the anti-hallucination escape valve — when in doubt, ask the binary in
 
 ## Limitations in 2.0.0
 
-- **XCUITest via the FB backend has known iOS 26 quirks** — direct path stalls on DTX handshake; `useXcodebuild=YES` path fails on `.xctestrun` write. Routes to the simctl backend (`xcodebuild test`) work fine. Targeted fix in 2.1.
+- **XCUITest via the FB backend**: in 2.0.0 the direct DTX path stalled on the
+  bundle-ready handshake because the runner + target apps were never installed
+  before `FBManagedTestRunStrategy` looked them up via
+  `installedApplication(bundleID:)`. 2.0.1 installs both first and pins
+  `useXcodebuild:NO` (the canonical idb path); the `useXcodebuild:YES` branch
+  in upstream `FBXcodeBuildOperation.createXCTestRunFile` writes a literal
+  `StubBundleId` placeholder dict that `xcodebuild` can't consume, so we never
+  try to use it.
 - **UI verbs beyond `tap`/`swipe`** — `find`/`wait`/`assert`/`type`/`screen+AX-tree` need FBAccessibilityElement bridging. Queued for 2.1.
 - **Physical-device runtime control + log streaming** — `device list/install/launch` work; richer device ops need FBDeviceControl wired through FBBridge.
 - **Performance tests still belong to xcodebuild.** Simulator perf metrics are unreliable; iostesting can't fix that. Run perf tests on physical hardware via `xcodebuild test` with a Release-config perf scheme.

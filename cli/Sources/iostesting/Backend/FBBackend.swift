@@ -165,6 +165,7 @@ struct FBBackend: Backend {
         bundlePath: URL,
         hostApp: URL?,
         filters: [String],
+        terminationTimeoutSeconds: Double,
         onEvent: @Sendable @escaping (TestEvent) -> Void
     ) async throws {
         let resolved = try await resolveSimulator(udid)
@@ -174,6 +175,11 @@ struct FBBackend: Backend {
         // (e.g. SpinCall.app next to SpinCallUITests-Runner.app).
         let (uiTesting, targetApp) = detectUITestingContext(bundlePath: bundlePath, hostApp: effectiveHost)
         let runState = RunState(onEvent: onEvent)
+        // `terminationTimeoutSeconds` becomes FBTestLaunchConfiguration.timeout.
+        // This is the value FB's runner-termination wait uses after the test
+        // method exits ("Waited N seconds for process M to terminate"). Caller
+        // controls it via `test run --termination-timeout=<seconds>`.
+        let timeout = max(terminationTimeoutSeconds, 30.0)
         do {
             try FBBridge.runTestsInBundle(
                 atPath: bundlePath.path,
@@ -182,7 +188,7 @@ struct FBBackend: Backend {
                 uiTesting: uiTesting,
                 testsToRun: Set(filters),
                 onSimulator: resolved.udid,
-                timeout: 120.0,
+                timeout: timeout,
                 onEvent: { dict in
                     runState.handle(rawEvent: dict)
                 }
@@ -212,9 +218,12 @@ struct FBBackend: Backend {
     func addMedia(udid: String, files: [URL]) async throws { throw FBBackendError.notYetImplemented("addMedia") }
     func setLocation(udid: String, latitude: Double, longitude: Double) async throws { throw FBBackendError.notYetImplemented("setLocation") }
     func clearLocation(udid: String) async throws { throw FBBackendError.notYetImplemented("clearLocation") }
+    func startLocationTrack(udid: String, waypoints: [(latitude: Double, longitude: Double)], intervalSeconds: Double) async throws { throw FBBackendError.notYetImplemented("startLocationTrack") }
     func pressButton(udid: String, button: String) async throws { throw FBBackendError.notYetImplemented("pressButton") }
     func setAppearance(udid: String, appearance: String) async throws { throw FBBackendError.notYetImplemented("setAppearance") }
     func openURL(udid: String, url: String) async throws { throw FBBackendError.notYetImplemented("openURL") }
+    func setSimEnv(udid: String, key: String, value: String) async throws { throw FBBackendError.notYetImplemented("setSimEnv") }
+    func unsetSimEnv(udid: String, key: String) async throws { throw FBBackendError.notYetImplemented("unsetSimEnv") }
 }
 
 /// Bridges the dict events FBBridge pushes into our typed TestEvent enum,
@@ -314,12 +323,15 @@ struct HybridBackend: Backend {
     func screenshot(udid: String, output: URL) async throws { try await attempt({ try await primary.screenshot(udid: udid, output: output) }, fallback: { try await fallback.screenshot(udid: udid, output: output) }) }
     func streamLogs(udid: String, bundleId: String?, predicate: String?, onEvent: @Sendable @escaping (LogEvent) -> Void) async throws { try await attempt({ try await primary.streamLogs(udid: udid, bundleId: bundleId, predicate: predicate, onEvent: onEvent) }, fallback: { try await fallback.streamLogs(udid: udid, bundleId: bundleId, predicate: predicate, onEvent: onEvent) }) }
     func listTests(bundlePath: URL) async throws -> [TestCase] { try await attempt({ try await primary.listTests(bundlePath: bundlePath) }, fallback: { try await fallback.listTests(bundlePath: bundlePath) }) }
-    func runTests(udid: String, bundlePath: URL, hostApp: URL?, filters: [String], onEvent: @Sendable @escaping (TestEvent) -> Void) async throws { try await attempt({ try await primary.runTests(udid: udid, bundlePath: bundlePath, hostApp: hostApp, filters: filters, onEvent: onEvent) }, fallback: { try await fallback.runTests(udid: udid, bundlePath: bundlePath, hostApp: hostApp, filters: filters, onEvent: onEvent) }) }
+    func runTests(udid: String, bundlePath: URL, hostApp: URL?, filters: [String], terminationTimeoutSeconds: Double, onEvent: @Sendable @escaping (TestEvent) -> Void) async throws { try await attempt({ try await primary.runTests(udid: udid, bundlePath: bundlePath, hostApp: hostApp, filters: filters, terminationTimeoutSeconds: terminationTimeoutSeconds, onEvent: onEvent) }, fallback: { try await fallback.runTests(udid: udid, bundlePath: bundlePath, hostApp: hostApp, filters: filters, terminationTimeoutSeconds: terminationTimeoutSeconds, onEvent: onEvent) }) }
     func pruneUnavailableSimulators() async throws -> Int { try await attempt({ try await primary.pruneUnavailableSimulators() }, fallback: { try await fallback.pruneUnavailableSimulators() }) }
     func addMedia(udid: String, files: [URL]) async throws { try await attempt({ try await primary.addMedia(udid: udid, files: files) }, fallback: { try await fallback.addMedia(udid: udid, files: files) }) }
     func setLocation(udid: String, latitude: Double, longitude: Double) async throws { try await attempt({ try await primary.setLocation(udid: udid, latitude: latitude, longitude: longitude) }, fallback: { try await fallback.setLocation(udid: udid, latitude: latitude, longitude: longitude) }) }
     func clearLocation(udid: String) async throws { try await attempt({ try await primary.clearLocation(udid: udid) }, fallback: { try await fallback.clearLocation(udid: udid) }) }
+    func startLocationTrack(udid: String, waypoints: [(latitude: Double, longitude: Double)], intervalSeconds: Double) async throws { try await attempt({ try await primary.startLocationTrack(udid: udid, waypoints: waypoints, intervalSeconds: intervalSeconds) }, fallback: { try await fallback.startLocationTrack(udid: udid, waypoints: waypoints, intervalSeconds: intervalSeconds) }) }
     func pressButton(udid: String, button: String) async throws { try await attempt({ try await primary.pressButton(udid: udid, button: button) }, fallback: { try await fallback.pressButton(udid: udid, button: button) }) }
     func setAppearance(udid: String, appearance: String) async throws { try await attempt({ try await primary.setAppearance(udid: udid, appearance: appearance) }, fallback: { try await fallback.setAppearance(udid: udid, appearance: appearance) }) }
     func openURL(udid: String, url: String) async throws { try await attempt({ try await primary.openURL(udid: udid, url: url) }, fallback: { try await fallback.openURL(udid: udid, url: url) }) }
+    func setSimEnv(udid: String, key: String, value: String) async throws { try await attempt({ try await primary.setSimEnv(udid: udid, key: key, value: value) }, fallback: { try await fallback.setSimEnv(udid: udid, key: key, value: value) }) }
+    func unsetSimEnv(udid: String, key: String) async throws { try await attempt({ try await primary.unsetSimEnv(udid: udid, key: key) }, fallback: { try await fallback.unsetSimEnv(udid: udid, key: key) }) }
 }

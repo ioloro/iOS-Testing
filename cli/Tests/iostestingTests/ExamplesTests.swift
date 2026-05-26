@@ -14,6 +14,7 @@ struct ExamplesTests {
             ("simPrune", Examples.simPrune),
             ("simMediaAdd", Examples.simMediaAdd),
             ("simLocation", Examples.simLocation),
+            ("simEnv", Examples.simEnv),
             ("simButton", Examples.simButton),
             ("simAppearance", Examples.simAppearance),
             ("simOpenURL", Examples.simOpenURL),
@@ -36,7 +37,8 @@ struct ExamplesTests {
             ("configReset", Examples.configReset),
             ("licenses", Examples.licenses),
             ("clean", Examples.clean),
-            ("context", Examples.context)
+            ("context", Examples.context),
+            ("setup", Examples.setup)
         ]
         for (name, body) in all {
             #expect(!body.isEmpty, "\(name) is empty")

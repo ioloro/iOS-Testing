@@ -6,7 +6,7 @@ struct IOSTesting: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "iostesting",
         abstract: "Drive iOS simulators and run XCTest bundles for the @ioloro/ios-testing skill.",
-        version: "2.0.0",
+        version: "2.2.0",
         subcommands: [
             ConfigCommand.self,
             Context.self,
@@ -21,8 +21,11 @@ struct IOSTesting: AsyncParsableCommand {
             Device.self,
             Test.self,
             UI.self,
+            Privacy.self,
+            Alerts.self,
             Clean.self,
-            Licenses.self
+            Licenses.self,
+            SetupCommand.self
         ]
     )
 }

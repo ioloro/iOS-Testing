@@ -151,6 +151,7 @@ protocol Backend: Sendable {
         bundlePath: URL,
         hostApp: URL?,
         filters: [String],
+        terminationTimeoutSeconds: Double,
         onEvent: @Sendable @escaping (TestEvent) -> Void
     ) async throws
 
@@ -159,7 +160,15 @@ protocol Backend: Sendable {
     func addMedia(udid: String, files: [URL]) async throws
     func setLocation(udid: String, latitude: Double, longitude: Double) async throws
     func clearLocation(udid: String) async throws
+    /// Drive the simulator's location through a sequence of waypoints at the
+    /// given interval (seconds between points). Used for GPX playback.
+    func startLocationTrack(udid: String, waypoints: [(latitude: Double, longitude: Double)], intervalSeconds: Double) async throws
     func pressButton(udid: String, button: String) async throws
     func setAppearance(udid: String, appearance: String) async throws
     func openURL(udid: String, url: String) async throws
+    /// Set a launchd environment variable on the simulator. Newly-launched
+    /// processes inherit the value. Equivalent to `simctl spawn <udid> launchctl setenv KEY VALUE`.
+    func setSimEnv(udid: String, key: String, value: String) async throws
+    /// Unset a launchd environment variable on the simulator.
+    func unsetSimEnv(udid: String, key: String) async throws
 }

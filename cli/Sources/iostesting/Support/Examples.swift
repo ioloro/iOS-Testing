@@ -51,11 +51,36 @@ enum Examples {
     """
 
     static let simLocation = """
-    # Set
+    # Set a single point
     iostesting sim location -s "iPhone 17 Pro" --set "37.7749,-122.4194"
 
     # Clear (revert to default/real)
     iostesting sim location -s "iPhone 17 Pro" --clear
+
+    # Replay a GPX track. Default interval=1s between points, default cap=1500.
+    iostesting sim location -s "iPhone 17 Pro" --gpx ./round.gpx
+
+    # Faster replay, more points
+    iostesting sim location -s "iPhone 17 Pro" --gpx ./round.gpx --interval 0.25 --max-waypoints 5000
+
+    # What's currently happening?
+    iostesting sim location -s "iPhone 17 Pro" --status
+    iostesting sim location -s "iPhone 17 Pro" --status --json
+    """
+
+    static let simEnv = """
+    # Set a launchd env var (newly-launched apps inherit it)
+    iostesting sim env -s "iPhone 17 Pro" --set DEWY_CI_DEV_TOKEN=abc123
+
+    # Set multiple at once
+    iostesting sim env -s "iPhone 17 Pro" \\
+      --set API_HOST=http://localhost:3000 --set FEATURE_FOO=1
+
+    # Unset
+    iostesting sim env -s "iPhone 17 Pro" --unset DEWY_CI_DEV_TOKEN
+
+    # Background: these shell to `simctl spawn <udid> launchctl setenv KEY VALUE`.
+    # Existing processes are NOT affected — relaunch the app after setting.
     """
 
     static let simButton = """
@@ -180,6 +205,41 @@ enum Examples {
     # NDJSON event stream for agents
     iostesting test run ./build/MyAppTests.xctest --json
 
+    # Bump the post-test termination wait (default 120s, max 600s). Useful when
+    # the host app holds background subscriptions or in-flight requests that
+    # delay clean shutdown.
+    IOSTESTING_BACKEND=fb iostesting test run ./build/MyAppUITests-Runner.app/PlugIns/MyAppUITests.xctest \\
+      --termination-timeout 300
+
+    # Bridge a sim env var into launchd before the runner boots (newly-launched
+    # apps inherit it). Repeatable. Equivalent to `iostesting sim env --set ...`
+    # then `test run`.
+    iostesting test run ./build/MyAppUITests.xctest \\
+      --sim-env DEWY_CI_DEV_TOKEN=abc123 --sim-env FEATURE_FOO=1
+
+    # Pre-grant location-always BEFORE the runner launches. Pre-empts iOS 26's
+    # "Allow X to ALSO use your location even when you are not using the app?"
+    # upgrade prompt — SpringBoard-owned, XCUITest's addUIInterruptionMonitor
+    # cannot catch it. `all-location` grants both `location` AND `location-always`.
+    IOSTESTING_BACKEND=fb iostesting test run \\
+      ./build/MyAppUITests-Runner.app/PlugIns/MyAppUITests.xctest \\
+      --privacy-grant all-location
+
+    # Belt-and-suspenders: pre-grant privacy AND run a background watcher that
+    # OCRs the screen every 2s and taps system prompts as they fire. Catches the
+    # subset of modals that simctl-grant can't suppress (e.g. tracking, notifs).
+    IOSTESTING_BACKEND=fb iostesting test run \\
+      ./build/MyAppUITests-Runner.app/PlugIns/MyAppUITests.xctest \\
+      --privacy-grant all-location \\
+      --auto-dismiss-alerts \\
+      --termination-timeout 300
+
+    # Custom dismiss labels (defaults cover the common iOS prompts).
+    IOSTESTING_BACKEND=fb iostesting test run ./MyUITests.xctest \\
+      --auto-dismiss-alerts \\
+      --auto-dismiss-label "Keep Only While Using" \\
+      --auto-dismiss-label "Allow"
+
     # Default backend (simctl) runs logic tests only. For app-hosted XCTest +
     # Swift Testing bundles, set IOSTESTING_BACKEND=fb.
     """
@@ -227,6 +287,27 @@ enum Examples {
     iostesting clean --all                 # everything iostesting + Xcode
     """
 
+    static let setup = """
+    # First-time setup. Merges iostesting permissions into ~/.claude/settings.json.
+    # Run once after installing the @ioloro/ios-testing plugin to stop the
+    # Claude Code permission prompts for xcrun simctl spawn, swift build, etc.
+    iostesting setup
+
+    # Preview the changes without writing
+    iostesting setup --dry-run
+
+    # See exactly what file would be written
+    iostesting setup --print
+
+    # Test against a different settings file
+    iostesting setup --path ./test-settings.json
+
+    # JSON output for scripting (records added + alreadyPresent)
+    iostesting setup --json
+
+    # Idempotent. Running twice is a no-op the second time.
+    """
+
     static let context = """
     # In a directory containing .xcodeproj or .xcworkspace
     iostesting context
@@ -248,5 +329,71 @@ enum Examples {
 
     # Slow swipe (1 second)
     IOSTESTING_BACKEND=fb iostesting ui swipe --x1 0 --y1 400 --x2 400 --y2 400 --duration 1.0
+    """
+
+    static let privacyGrant = """
+    # Pre-empt iOS 26's "Allow X to ALSO use your location even when you are not
+    # using the app?" upgrade prompt — SpringBoard-owned, addUIInterruptionMonitor
+    # cannot catch it. Grant both `location` AND `location-always` AFTER the app
+    # is installed (locationd needs the bundle path to write the auth record).
+    iostesting privacy grant --all-location com.example.MyApp
+
+    # Single service
+    iostesting privacy grant location-always com.example.MyApp
+    iostesting privacy grant photos com.example.MyApp
+    iostesting privacy grant microphone com.example.MyApp
+
+    # All recognized services: all, calendar, contacts, contacts-limited,
+    # location, location-always, photos, photos-add, media-library,
+    # microphone, motion, reminders, siri
+    """
+
+    static let privacyRevoke = """
+    iostesting privacy revoke location-always com.example.MyApp
+    iostesting privacy revoke photos com.example.MyApp
+    """
+
+    static let privacyReset = """
+    # Reset every grant for one app (next request will prompt)
+    iostesting privacy reset all com.example.MyApp
+
+    # Reset device-wide (drop the bundle id)
+    iostesting privacy reset all
+
+    # Reset just the location grants
+    iostesting privacy reset location com.example.MyApp
+    """
+
+    static let alertsDismiss = """
+    # One-shot: screenshot + OCR + tap. Returns exit 0 on a match, 2 on none.
+    # Default labels include "Keep Only While Using" (iOS 26 location upgrade
+    # prompt), "Allow While Using App", "Don't Allow", "OK", "Allow".
+    IOSTESTING_BACKEND=fb iostesting alerts dismiss
+
+    # Custom label — taps the first button whose OCR'd text contains this.
+    IOSTESTING_BACKEND=fb iostesting alerts dismiss --label "Allow"
+    IOSTESTING_BACKEND=fb iostesting alerts dismiss --label "Keep Only While Using"
+
+    # JSON output for scripting
+    IOSTESTING_BACKEND=fb iostesting alerts dismiss --json
+    """
+
+    static let alertsWatch = """
+    # Background watcher: poll the sim every 2s for system alerts; tap any
+    # matching button. Catches SpringBoard-owned modals XCUITest's
+    # addUIInterruptionMonitor misses. Defaults: duration=600s, interval=2.0s.
+    IOSTESTING_BACKEND=fb iostesting alerts watch &
+    WATCHER=$!
+    # ... run your tests ...
+    kill $WATCHER
+
+    # Bounded duration + JSON event stream
+    IOSTESTING_BACKEND=fb iostesting alerts watch --duration 120 --json
+
+    # Only watch for the location-upgrade prompt
+    IOSTESTING_BACKEND=fb iostesting alerts watch --label "Keep Only While Using"
+
+    # Prefer the integrated path: `test run --auto-dismiss-alerts` spawns this
+    # watcher for you and tears it down when the test finishes.
     """
 }
