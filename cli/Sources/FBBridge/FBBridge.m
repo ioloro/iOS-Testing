@@ -17,6 +17,14 @@
 #import <FBSimulatorControl/FBSimulatorControlFrameworkLoader.h>
 #import <XCTestBootstrap/XCTestBootstrap.h>
 
+// Selector exposed by FBSimulator's private surface (visible as a string in
+// FBSimulatorControl). Declared here so we can call it without a compile
+// warning; if a future framework drop drops the accessor we fall back to a
+// runtime probe in the host-launch env builder below.
+@interface FBSimulator (FBBridgePrivateRuntime)
+@property (nonatomic, copy, readonly) NSString *runtimeRootDirectory;
+@end
+
 // FBXCTestReporter implementation — forwards events to a Swift block.
 @interface FBBridgeReporter : NSObject <FBXCTestReporter>
 @property (nonatomic, copy) FBBridgeTestEventBlock onEvent;
@@ -350,6 +358,45 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
 
 #pragma mark - XCTest run
 
+/// Idempotent install: if the bundle id at appPath is already installed and
+/// resolves at the same path, skip; otherwise (re-)install. The
+/// FBManagedTestRunStrategy / FBTestRunnerConfiguration pipeline looks up
+/// `installedApplication(bundleID:)` and uses its on-disk bundle to derive
+/// `Frameworks/` search paths, so the runner + target app must both be
+/// installed on the simulator before runTest can succeed.
++ (BOOL)ensureInstalled:(FBBundleDescriptor *)bundle
+            onSimulator:(FBSimulator *)sim
+                 logger:(id<FBControlCoreLogger>)logger
+                  error:(NSError **)error {
+    if (!bundle || !bundle.identifier || bundle.identifier.length == 0) {
+        if (error) *error = [NSError errorWithDomain:@"FBBridge" code:10 userInfo:@{NSLocalizedDescriptionKey: @"bundle has no identifier"}];
+        return NO;
+    }
+    NSString *bundleId = bundle.identifier;
+    [logger log:[NSString stringWithFormat:@"FBBridge.ensureInstalled: bundle=%@ path=%@", bundleId, bundle.path]];
+    FBFuture<FBInstalledApplication *> *installedFuture = [sim installedApplicationWithBundleID:bundleId];
+    NSError *checkErr = nil;
+    FBInstalledApplication *existing = [installedFuture awaitWithTimeout:15.0 error:&checkErr];
+    if (existing && [existing.bundle.path isEqualToString:bundle.path]) {
+        [logger log:[NSString stringWithFormat:@"FBBridge.ensureInstalled: %@ already installed at same path, skipping", bundleId]];
+        return YES;
+    }
+    // Either not installed, installed at a different path (stale), or the
+    // lookup errored. In all cases install (the simctl device install is
+    // idempotent and overwrites the existing record). This is what `idb` does
+    // in CompanionLib/FBIDBStorageManager.swift.
+    [logger log:[NSString stringWithFormat:@"FBBridge.ensureInstalled: installing %@ from %@", bundleId, bundle.path]];
+    FBFuture<FBInstalledApplication *> *installFuture = [sim installApplicationWithPath:bundle.path];
+    NSError *installErr = nil;
+    FBInstalledApplication *installed = [installFuture awaitWithTimeout:120.0 error:&installErr];
+    if (!installed) {
+        if (error) *error = installErr ?: [NSError errorWithDomain:@"FBBridge" code:11 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"install of %@ failed", bundleId]}];
+        return NO;
+    }
+    [logger log:[NSString stringWithFormat:@"FBBridge.ensureInstalled: %@ installed OK", bundleId]];
+    return YES;
+}
+
 + (BOOL)runTestsInBundleAtPath:(NSString *)bundlePath
                    hostAppPath:(nullable NSString *)hostAppPath
                  targetAppPath:(nullable NSString *)targetAppPath
@@ -366,6 +413,7 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
         if (error) *error = [NSError errorWithDomain:@"FBBridge" code:5 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"no simulator with UDID %@", udid]}];
         return NO;
     }
+    id<FBControlCoreLogger> logger = FBControlCoreGlobalConfiguration.defaultLogger;
 
     NSError *bundleErr = nil;
     FBBundleDescriptor *testBundle = [FBBundleDescriptor bundleFromPath:bundlePath error:&bundleErr];
@@ -374,6 +422,13 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
         return NO;
     }
 
+    // The host app is the process that LOADS the .xctest bundle. For UI tests
+    // it's the *UITests-Runner.app; for app-hosted unit tests it's the host
+    // application. Pure logic tests have no host (we don't support that path
+    // through FBManagedTestRunStrategy — those go via FBListTestStrategy /
+    // FBLogicTestRunStrategy upstream). The runner is launched by
+    // FBManagedTestRunStrategy via `installedApplication(bundleID:)`, so it
+    // MUST be installed on the simulator before we hand off.
     FBBundleDescriptor *hostBundle = nil;
     FBApplicationLaunchConfiguration *hostLaunch = nil;
     if (hostAppPath) {
@@ -382,27 +437,99 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
             if (error) *error = bundleErr ?: [NSError errorWithDomain:@"FBBridge" code:9 userInfo:@{NSLocalizedDescriptionKey: @"could not read host .app bundle"}];
             return NO;
         }
+        if (![self ensureInstalled:hostBundle onSimulator:sim logger:logger error:error]) {
+            return NO;
+        }
+        // applicationLaunchConfiguration.bundleID MUST be the runner's bundle
+        // id. FBTestRunnerConfiguration.prepareConfiguration looks it up via
+        // installedApplication(bundleID:) to derive the runner binary, framework
+        // search paths, and the launch environment (XCTestConfigurationFilePath,
+        // DYLD_INSERT_LIBRARIES of libShimulator.dylib, etc.).
+        //
+        // Build the canonical host-app launch environment. Without these vars
+        // (which `xcodebuild test` injects), storekitd rejects every
+        // SKTestSession mutation with SKInternalErrorDomain Code=3, the test
+        // hangs, and XCTestBootstrap eventually reports "host application
+        // process stalled". Values mirror the .xctestrun produced by
+        // `xcodebuild build-for-testing` for app-hosted unit test targets.
+        NSMutableDictionary<NSString *, NSString *> *env = [NSMutableDictionary dictionary];
+        env[@"APP_DISTRIBUTOR_ID_OVERRIDE"]              = @"com.apple.AppStore";
+        env[@"OS_ACTIVITY_DT_MODE"]                      = @"YES";
+        env[@"TERM"]                                     = @"dumb";
+        env[@"SQLITE_ENABLE_THREAD_ASSERTIONS"]          = @"1";
+        env[@"PERFC_ENABLE_EXTENDED_DIAGNOSTIC_FORMAT"]  = @"1";
+        env[@"PERFC_ENABLE_PROFILE_MODE"]                = @"1";
+        env[@"PERFC_RESET_INSERT_LIBRARIES"]             = @"1";
+        env[@"PERFC_SUPPRESS_SYSTEM_REPORTS"]            = @"1";
+        if (!uiTesting) {
+            // App-hosted unit-test path. Inject the bundle-inject dylib + DYLD
+            // paths so storekitd sees the XCTest client-environment-type marker
+            // and so XCTest's own framework search paths resolve from inside
+            // the host app.
+            NSString *platformDir = [hostAppPath stringByDeletingLastPathComponent];
+            NSString *developerDir = NSProcessInfo.processInfo.environment[@"DEVELOPER_DIR"];
+            if (developerDir.length == 0) {
+                NSTask *xcs = [[NSTask alloc] init];
+                NSPipe *outPipe = [NSPipe pipe];
+                xcs.launchPath = @"/usr/bin/xcode-select";
+                xcs.arguments = @[@"-p"];
+                xcs.standardOutput = outPipe;
+                @try { [xcs launch]; [xcs waitUntilExit]; } @catch (NSException *e) {}
+                NSData *outData = [outPipe.fileHandleForReading readDataToEndOfFile];
+                developerDir = [[[NSString alloc] initWithData:outData encoding:NSUTF8StringEncoding]
+                    stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            }
+            if (developerDir.length == 0) developerDir = @"/Applications/Xcode.app/Contents/Developer";
+            NSString *platforms = [developerDir stringByAppendingPathComponent:@"Platforms"];
+            NSString *simRuntimeRoot = @"";
+            if ([sim respondsToSelector:@selector(runtimeRootDirectory)]) {
+                simRuntimeRoot = sim.runtimeRootDirectory ?: @"";
+            }
+
+            NSString *injectDylib = [hostAppPath stringByAppendingPathComponent:@"Frameworks/libXCTestBundleInject.dylib"];
+            NSString *mtcDylib = simRuntimeRoot.length > 0
+                ? [simRuntimeRoot stringByAppendingPathComponent:@"usr/lib/libMainThreadChecker.dylib"]
+                : nil;
+            NSMutableArray<NSString *> *inserts = [NSMutableArray array];
+            if ([NSFileManager.defaultManager fileExistsAtPath:injectDylib]) {
+                [inserts addObject:injectDylib];
+            }
+            if (mtcDylib && [NSFileManager.defaultManager fileExistsAtPath:mtcDylib]) {
+                [inserts addObject:mtcDylib];
+            }
+            [inserts addObject:@"/usr/lib/libRPAC.dylib"];
+
+            env[@"DYLD_INSERT_LIBRARIES"]               = [inserts componentsJoinedByString:@":"];
+            env[@"DYLD_FRAMEWORK_PATH"]                 = [NSString stringWithFormat:@"%@:%@/PackageFrameworks:%@/iPhoneSimulator.platform/Developer/Library/Frameworks", platformDir, platformDir, platforms];
+            env[@"DYLD_LIBRARY_PATH"]                   = [NSString stringWithFormat:@"%@:%@/iPhoneSimulator.platform/Developer/usr/lib", platformDir, platforms];
+            env[@"XCInjectBundleInto"]                  = @"unused";
+            env[@"XCODE_SCHEME_NAME"]                   = hostBundle.name ?: @"";
+            env[@"XCODE_TEST_PLAN_NAME"]                = hostBundle.name ?: @"";
+            env[@"__XCODE_BUILT_PRODUCTS_DIR_PATHS"]    = platformDir;
+            env[@"__XPC_DYLD_FRAMEWORK_PATH"]           = platformDir;
+            env[@"__XPC_DYLD_LIBRARY_PATH"]             = platformDir;
+        }
         hostLaunch = [[FBApplicationLaunchConfiguration alloc]
             initWithBundleID:hostBundle.identifier ?: @""
                   bundleName:hostBundle.name
                    arguments:@[]
-                 environment:@{}
+                 environment:env
              waitForDebugger:NO
                           io:[FBProcessIO outputToDevNull]
                   launchMode:FBApplicationLaunchModeRelaunchIfRunning];
     } else {
-        hostLaunch = [[FBApplicationLaunchConfiguration alloc]
-            initWithBundleID:@""
-                  bundleName:nil
-                   arguments:@[]
-                 environment:@{}
-             waitForDebugger:NO
-                          io:[FBProcessIO outputToDevNull]
-                  launchMode:FBApplicationLaunchModeRelaunchIfRunning];
+        // No host app — we can't run app-hosted or UI tests this way. The
+        // managed run strategy is only for app-hosted execution; pure logic
+        // tests need a different entry point that we don't expose here yet.
+        if (error) *error = [NSError errorWithDomain:@"FBBridge" code:12 userInfo:@{NSLocalizedDescriptionKey: @"runTestsInBundleAtPath requires hostAppPath (logic-only tests not supported via this entry point)"}];
+        return NO;
     }
 
-    // For UI tests, the target app (the one being driven) is separate from the
-    // test runner host. FBTestLaunchConfiguration takes both.
+    // For UI tests, the target app (the one being driven by XCUIApplication)
+    // is separate from the runner. It must also be installed so that:
+    //   1. testApplicationDependencies in the .xctestconfiguration resolves
+    //   2. _XCT_launchProcessWithPath:bundleID: from the runner can launch it
+    //   3. its Frameworks/ are reachable
     FBBundleDescriptor *targetBundle = nil;
     if (targetAppPath) {
         targetBundle = [FBBundleDescriptor bundleFromPath:targetAppPath error:&bundleErr];
@@ -410,18 +537,28 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
             if (error) *error = bundleErr ?: [NSError errorWithDomain:@"FBBridge" code:9 userInfo:@{NSLocalizedDescriptionKey: @"could not read target .app bundle"}];
             return NO;
         }
+        if (![self ensureInstalled:targetBundle onSimulator:sim logger:logger error:error]) {
+            return NO;
+        }
     }
 
+    // Both UI and app-hosted unit tests go through the DIRECT DTX path
+    // (useXcodebuild: NO). This mirrors idb's canonical flow in
+    // CompanionLib/FBXCTestDescriptor.swift (FBXCTestBootstrapDescriptor): UI
+    // tests are configured with `initializeUITesting: true, useXcodebuild:
+    // false`. The xcodebuild path (useXcodebuild: YES) is ONLY used when the
+    // caller supplies a pre-baked .xctestrun via FBXCodebuildTestRunDescriptor.
+    // Upstream's FBXcodeBuildOperation.xctestRunProperties writes a "StubBundleId"
+    // placeholder dict that xcodebuild can't actually consume, so we cannot
+    // synthesize one from FBTestLaunchConfiguration fields alone — that path
+    // is broken for any caller who doesn't already have a real .xctestrun.
     FBTestLaunchConfiguration *launchConfig = [[FBTestLaunchConfiguration alloc]
         initWithTestBundle:testBundle
         applicationLaunchConfiguration:hostLaunch
         testHostBundle:hostBundle
         timeout:timeoutSeconds
         initializeUITesting:uiTesting
-        // UI tests use xcodebuild's canonical XCUITest runner harness (sets up
-        // DTX connection back to the test bundle). Logic / app-hosted tests
-        // can use idb's lighter-weight path.
-        useXcodebuild:uiTesting
+        useXcodebuild:NO
         testsToRun:(testsToRun.count > 0 ? testsToRun : nil)
         testsToSkip:nil
         targetApplicationBundle:targetBundle
@@ -433,11 +570,17 @@ static NSMutableDictionary<NSString *, FBSimulatorHID *> *gHIDCache = nil;
         logDirectoryPath:nil
         reportResultBundle:NO];
 
+    [logger log:[NSString stringWithFormat:@"FBBridge.runTests: host=%@ target=%@ uiTesting=%d filters=%lu",
+        hostBundle.identifier ?: @"(none)",
+        targetBundle.identifier ?: @"(none)",
+        uiTesting ? 1 : 0,
+        (unsigned long)testsToRun.count]];
+
     FBBridgeReporter *reporter = [[FBBridgeReporter alloc] initWithBlock:onEvent];
 
     FBFuture<NSNull *> *future = [sim runTestWithLaunchConfiguration:launchConfig
                                                             reporter:reporter
-                                                              logger:FBControlCoreGlobalConfiguration.defaultLogger];
+                                                              logger:logger];
     NSError *waitErr = nil;
     [future awaitWithTimeout:timeoutSeconds + 30.0 error:&waitErr];
     if (waitErr) {
