@@ -2,6 +2,18 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Skill 2.2.0 → 2.3.0 — test reliability reference.** New `skills/ios-testing/test-reliability.md` capturing the failures that only show up on a loaded/shared/newer-OS CI runner ("passes locally, crashes in CI"):
+  - **Timing-robust tests:** never assert a wall-clock *upper* bound; poll-to-a-condition instead of fixed `sleep`; measure timing *relatively* when it's the contract; guarantee "some but not all" by construction.
+  - **Actor isolation on the iOS 26+/Swift 6 runtime:** off-main calls into `@MainActor` code are now a hard `EXC_BREAKPOINT`/`SIGTRAP` (older runtimes silently continued) — Codable DTOs/models must be nonisolated; bridge mock callbacks (that run off-main) to main; the `@unchecked Sendable` continuation box.
+  - **Continuation-bridge safety:** defensive timeout + once-guarded resume so a callback that never fires can't leak/hang; mocks must honor the reply/error contract.
+  - **Unit-test-host hygiene:** guard app-startup network/listeners/gates and crash-reporting SDKs on `XCTestConfigurationFilePath`.
+  - **CI runner reality:** `-parallel-testing-enabled NO` on constrained runners; `-retry-tests-on-failure` over named-suite skips (whack-a-mole); `build-for-testing` as a fast per-platform compile gate; tiered PR-vs-nightly gating; unreliable Swift Testing `skippedTests`/`-skip-testing` for nested `@Suite`s → gate at the source with `.enabled(if:)`.
+  - **Diagnosis discipline:** read the real `.xcresult`/`.ips` crash before diagnosing; the crash victim ≠ the cause; reproduce on the exact runtime and verify locally before pushing.
+- SKILL.md: new "Reliability, Concurrency & the CI host" best-practices section, matching anti-patterns, an expanded activation `description`, and the new reference in the file list.
+
 ## [2.0.0] - 2026-05-19
 
 Major release: the package is no longer a skill-only npm install — it now ships a **three-layer system** (skill + Swift CLI + Claude Code hook) backed by direct linkage against Meta's MIT-licensed iOS automation frameworks (FBControlCore, FBSimulatorControl, FBDeviceControl, XCTestBootstrap). UI automation (`tap`, `swipe`), Swift Testing bundles, full app lifecycle, and XCTest event streaming all work end-to-end on iOS 26 simulators.

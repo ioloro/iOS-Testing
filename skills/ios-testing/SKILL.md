@@ -1,12 +1,14 @@
 ---
 name: ios-testing
-version: "2.2.0"
+version: "2.3.0"
 description: >
   Use when writing, modifying, or reviewing tests for iOS/macOS apps.
   Activates for Swift Testing (@Test, #expect, @Suite), XCTest (XCTestCase, measure, XCTAssert),
   XCUITest (XCUIApplication, XCUIElement), performance testing, animation hitch testing,
   Instruments .trace file analysis (CPU profiling, system trace, allocations, etc.),
-  or when the user asks to write tests.
+  flaky / timing-sensitive tests, actor-isolation crashes (EXC_BREAKPOINT / SIGTRAP,
+  "passes locally crashes in CI"), continuation leaks / hangs, test-host stability,
+  and CI runner flakiness — or when the user asks to write tests.
 ---
 
 # iOS Testing Skill
@@ -139,6 +141,31 @@ Choose the correct framework based on what you are testing:
 - **Always use `accessibilityIdentifier`** for element queries, never localized display text.
 - **Set `continueAfterFailure = false`** in UI test `setUpWithError()`.
 
+### Reliability, Concurrency & the CI host
+Tests that pass on an idle laptop but flake on a loaded/shared/newer-OS runner.
+Full patterns + code in **[test-reliability.md](test-reliability.md)** — read it
+before "fixing" a flaky or CI-only crash. Highest-value rules:
+- **Never assert a wall-clock UPPER bound** (`#expect(elapsed < X)`). It tests
+  machine speed, not correctness, and flakes under load. Keep meaningful lower
+  bounds; use `.timeLimit()` to catch real hangs.
+- **Poll to a condition, don't `sleep` a fixed amount** to wait for async work —
+  a fixed wait under-waits a starved background task under load.
+- **When timing IS the contract, measure it relatively** (compare two runs on the
+  same machine — the difference is load-independent), never with an absolute bound.
+- **`@MainActor` types must not be decoded/used off the main thread.** On the
+  iOS 26+/Swift 6 runtime an off-main call into MainActor-isolated code is a hard
+  `EXC_BREAKPOINT`/`SIGTRAP` (older runtimes silently continued → "passes locally,
+  crashes in CI"). Codable DTOs/models should be **nonisolated**.
+- **Bridge continuations safely.** A `withCheckedContinuation` over a callback API
+  leaks and hangs forever if no callback fires — add a defensive timeout + a
+  once-guarded resume. Mocks must invoke a reply/error handler like the real thing.
+- **Keep the unit-test host inert.** Guard app-startup network/listeners/gates and
+  crash-reporting SDKs (Sentry) on `XCTestConfigurationFilePath` — otherwise their
+  background work trips the iOS watchdog and the crash lands on a random test.
+- **On CI: `-parallel-testing-enabled NO`** on constrained runners; treat pure
+  runner-flakiness crashes with **`-retry-tests-on-failure`**, not named-suite
+  skips (whack-a-mole). Read the `.xcresult`/`.ips` before diagnosing.
+
 ## Anti-Patterns to Avoid
 
 - Writing multiple near-identical test functions instead of using `@Test(arguments:)`.
@@ -150,6 +177,14 @@ Choose the correct framework based on what you are testing:
 - Only testing in light mode — always test both light and dark appearances.
 - Using hardcoded colors (`UIColor.black`, `Color.white`) instead of semantic colors.
 - Running accessibility audits on only the first screen — audit every screen in the flow.
+- Asserting a wall-clock **upper** bound (`#expect(elapsed < 1.0)`) — tests machine speed, not correctness; flakes under CI load. (See test-reliability.md §1.)
+- A fixed `Task.sleep` to wait for async/background work instead of polling to a condition — under-waits a starved task under load. (§2)
+- `@MainActor` on a `Codable` DTO/model that gets decoded off-main — a latent production `SIGTRAP` on iOS 26+ that only surfaces on newer CI runtimes. (§5)
+- A `withCheckedContinuation` bridging a callback with no defensive timeout — leaks and hangs forever if the callback never fires. (§6)
+- A test mock that records a call but invokes neither its reply nor error handler — hangs the awaiting caller. (§6)
+- Booting the full app service stack (network, listeners, crash SDKs) in the unit-test host — background work trips the watchdog and crashes a random test. Guard on `XCTestConfigurationFilePath`. (§7)
+- "Fixing" a flaky CI-only crash by skipping the named victim suite — the crash just moves to the next test. Use `-retry-tests-on-failure` and read the real crash log. (§8–9)
+- Trusting `.xctestplan` `skippedTests` / `-skip-testing:` to quarantine a **nested** Swift Testing `@Suite` — it silently no-ops. Gate at the source with `.enabled(if:)`/`.disabled`. (§8)
 
 ## Running Tests
 
@@ -296,6 +331,7 @@ For detailed patterns and code examples, see:
 - [Swift Testing patterns and examples](swift-testing.md)
 - [XCTest performance, power, and energy testing](xctest.md)
 - [XCUITest UI automation and animation testing](xcuitest.md)
+- [Test reliability: concurrency, timing, and the CI host](test-reliability.md) — flaky-timing tests, iOS 26+ actor-isolation crashes, continuation hangs, test-host hygiene, CI runner flakiness, crash-log diagnosis
 - [Instruments .trace file analysis](trace-analysis.md)
 - For running tests via the iostesting CLI: see `../../cli/README.md` in this repo.
 
