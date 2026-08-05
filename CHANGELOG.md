@@ -2,9 +2,10 @@
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [2.4.0] - 2026-08-05
 
 ### Added
+- **Skill 2.3.0 → 2.4.0 — App Store screenshot pipeline.** New `skills/ios-testing/app-store-screenshots.md`: an end-to-end playbook (capture matrix → `9:41` status bar → deterministic seeding → `.xcresult` extraction → PIL framing into 1320×2868 store tiles) plus App Store Connect upload and stable-Xcode-archive (ITMS-90534) specifics. SKILL.md and README.md route to it.
 - **Skill 2.2.0 → 2.3.0 — test reliability reference.** New `skills/ios-testing/test-reliability.md` capturing the failures that only show up on a loaded/shared/newer-OS CI runner ("passes locally, crashes in CI"):
   - **Timing-robust tests:** never assert a wall-clock *upper* bound; poll-to-a-condition instead of fixed `sleep`; measure timing *relatively* when it's the contract; guarantee "some but not all" by construction.
   - **Actor isolation on the iOS 26+/Swift 6 runtime:** off-main calls into `@MainActor` code are now a hard `EXC_BREAKPOINT`/`SIGTRAP` (older runtimes silently continued) — Codable DTOs/models must be nonisolated; bridge mock callbacks (that run off-main) to main; the `@unchecked Sendable` continuation box.
