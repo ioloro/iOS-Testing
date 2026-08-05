@@ -1,6 +1,6 @@
 ---
 name: ios-testing
-version: "2.3.0"
+version: "2.4.0"
 description: >
   Use when writing, modifying, or reviewing tests for iOS/macOS apps.
   Activates for Swift Testing (@Test, #expect, @Suite), XCTest (XCTestCase, measure, XCTAssert),

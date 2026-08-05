@@ -83,10 +83,10 @@ struct SetupCommandTests {
         #expect(deny == ["Bash(rm -rf:*)"], "sibling key 'deny' must survive the merge")
     }
 
-    @Test("Curated list contains exactly the 8 expected entries, no MCP or full-path forms")
+    @Test("Curated list contains exactly the 10 expected entries, no MCP or full-path forms")
     func curatedListShape() {
         let entries = SetupCommand.iostestingPermissions
-        #expect(entries.count == 8, "expected 8 curated permissions, got \(entries.count)")
+        #expect(entries.count == 10, "expected 10 curated permissions, got \(entries.count)")
         for entry in entries {
             #expect(entry.hasPrefix("Bash("), "every entry should be a Bash(...) pattern, got '\(entry)'")
             #expect(!entry.contains("mcp__"), "no MCP entries should be in the curated list")
