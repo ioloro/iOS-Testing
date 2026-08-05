@@ -81,6 +81,7 @@ Choose the correct framework based on what you are testing:
 | Snapshot/visual regression testing | **XCTest** (+ swift-snapshot-testing) | `import XCTest` |
 | Exit/crash tests (Swift 6.2+) | **Swift Testing** | `import Testing` |
 | Analyzing .trace files from Instruments | **xctrace CLI** | N/A (command-line tool) |
+| Generating App Store screenshots / marketing tiles | **XCUITest** (matrix + framing) | `import XCTest` |
 
 ## Critical Rules
 
@@ -325,6 +326,36 @@ You can read and analyze Xcode Instruments `.trace` files directly. When a user 
 
 See the [trace analysis reference](trace-analysis.md) for the complete guide including hang analysis workflow with Python script, .trace file structure, all schemas, and XML format details.
 
+## Generating App Store Screenshots
+
+This skill can also generate **App Store screenshots** — not just test an app, but
+drive it through every marketing state and produce framed store tiles. The same
+XCUITest muscle (launch args, accessibility identifiers, `XCUIScreenshot`) powers
+an end-to-end pipeline: capture deterministic states → apply a `9:41` status bar →
+extract from the `.xcresult` → composite into 1320×2868 store tiles with a baked
+headline.
+
+Reach for this when the user asks to "generate App Store screenshots", "capture
+screenshots for the store", "make screenshot tiles", or "frame screenshots for
+submission".
+
+Key moves (full playbook in the reference):
+
+1. **Matrix harness** — one XCUITest iterates `Config` × `ScreenKind`, relaunching
+   a fresh app per capture and attaching each PNG. Prove it with a smoke test first.
+2. **Deterministic seeding** — seed the data layer before the scene renders; full-history
+   seeds must wipe ALL prior rows or re-runs accumulate duplicates and silently misclassify.
+3. **9:41 status bar** — `xcrun simctl status_bar <udid> override` on the booted sim,
+   then `test-without-building` on that exact `id=<udid>` so no reboot wipes it.
+4. **Extract + frame** — `xcresulttool export attachments` maps UUIDs back to
+   `slug/screen.png`; PIL composites them onto brand-framed store canvases. Archive the
+   submission build with a **stable** Xcode (beta Xcode → ITMS-90534 on upload).
+
+See the [App Store screenshot pipeline](app-store-screenshots.md) for the complete
+runnable playbook including the `TEST_RUNNER_` env-forwarding gotcha, the
+`fileSystemSynchronizedGroup` landmine, the reusable PIL framing snippet, and ASC
+upload specifics.
+
 ## Reference Files
 
 For detailed patterns and code examples, see:
@@ -333,6 +364,7 @@ For detailed patterns and code examples, see:
 - [XCUITest UI automation and animation testing](xcuitest.md)
 - [Test reliability: concurrency, timing, and the CI host](test-reliability.md) — flaky-timing tests, iOS 26+ actor-isolation crashes, continuation hangs, test-host hygiene, CI runner flakiness, crash-log diagnosis
 - [Instruments .trace file analysis](trace-analysis.md)
+- [App Store screenshot pipeline](app-store-screenshots.md) — capture matrix, 9:41 status bar, deterministic seeding, `.xcresult` extraction, PIL framing into store tiles, ASC upload
 - For running tests via the iostesting CLI: see `../../cli/README.md` in this repo.
 
 ## When Generating Tests
