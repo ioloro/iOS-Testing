@@ -14,6 +14,7 @@ This skill teaches Claude when and how to use each Apple testing framework:
 - **XCTest** — performance benchmarks (`measure {}`, `XCTClockMetric`, `XCTCPUMetric`, `XCTMemoryMetric`, `XCTStorageMetric`), energy/power measurement (`XCTOSSignpostMetric`)
 - **XCUITest** — UI automation, accessibility audits, animation hitch testing, scroll performance, screenshot capture
 - **Instruments .trace analysis** — export and analyze Time Profiler, System Trace, Allocations, and other trace data without leaving the terminal
+- **App Store screenshots** — drive the app through every marketing state, capture with a `9:41` status bar, and composite framed 1320×2868 store tiles ready to upload
 
 The CLI then runs the tests Claude writes. The hook stops Claude from drifting back to raw `xcodebuild test`.
 
@@ -114,6 +115,7 @@ Then restart Claude Code. See [`hooks/README.md`](hooks/README.md) for details.
 | `xctest.md` | `measure {}`, all `XCTMetric` subclasses, manual measurement, signpost-based energy testing, baselines, power profiling |
 | `xcuitest.md` | Element queries, waiting patterns, launch config, scroll/animation performance, hitch metrics, accessibility audits, screenshot capture, multi-variant screenshot testing, real device testing, screenshot extraction and review website generation, page object pattern |
 | `trace-analysis.md` | Instruments .trace file structure, JSON export workflow, all common schemas by template, XML format reference, analysis patterns |
+| `app-store-screenshots.md` | End-to-end App Store screenshot pipeline: XCUITest matrix harness, deterministic seeding, `9:41` status bar, `xcresulttool` extraction, PIL framing into store tiles, ASC upload + stable-Xcode archive |
 | `trace2json.py` | Python 3 script that exports .trace files to self-contained JSON — resolves id/ref deduplication, flattens backtraces, caps output size |
 
 ### CLI (`cli/`)
